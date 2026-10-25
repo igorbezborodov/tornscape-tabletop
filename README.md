@@ -30,3 +30,36 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+## Browser CLI (Playwright)
+
+[`scripts/browser.mjs`](scripts/browser.mjs) — обёртка над Playwright для управления браузером из терминала (headless по умолчанию). Состояние (cookies, localStorage) хранится в persistent-профиле `.browser-profile`, последний URL — в `.browser-profile/state.json`, поэтому команды можно вызывать по одной: каждая следующая откроет последнюю страницу.
+
+Установка браузера (один раз):
+
+```bash
+npx playwright install chromium
+```
+
+Базовые команды:
+
+```bash
+npm run browser open http://localhost:5173   # открыть страницу
+npm run browser see                          # ARIA-снимок: что реально видит пользователь
+npm run browser text body                    # текст страницы
+npm run browser click "button.primary"       # клик по CSS-селектору
+npm run browser click-text "Начать игру"     # клик по кнопке/ссылке по тексту
+npm run browser fill "input[name=q]" "маг"   # заполнить поле
+npm run browser eval "document.title"        # выполнить JS на странице
+npm run browser screenshot board --full-page # скриншот в screenshots/
+npm run browser html ".roster"               # HTML фрагмента
+npm run browser -- --headed open             # показать окно браузера
+```
+
+Сценарий из нескольких шагов в одном процессе (сохраняет состояние React между шагами, разделитель `;;`):
+
+```bash
+npm run browser run "open http://localhost:5173;; click-text 'В P1';; wait 300;; screenshot roster;; text body"
+```
+
+То же можно передать JSON-файлом: `npm run browser run steps.json`, где `steps.json` — массив строк-команд. Флаги `--timeout=<ms>`, `--viewport=1440x900`, `--wait=<ms>`, `--logs` работают для всех команд. Папки `.browser-profile/` и `screenshots/` добавлены в [`.gitignore`](.gitignore).

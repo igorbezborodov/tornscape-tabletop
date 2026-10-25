@@ -12,6 +12,10 @@
     "preview": "vite preview",
     "db:seed": "prisma db seed",
     "db:studio": "node scripts/prisma-studio.mjs",
+    "browser": "node scripts/browser.mjs",
+    "browser:open": "node scripts/browser.mjs open",
+    "browser:see": "node scripts/browser.mjs see",
+    "browser:shot": "node scripts/browser.mjs screenshot",
     "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {
@@ -34,6 +38,7 @@
     "better-sqlite3": "^13.0.3",
     "concurrently": "^10.0.6",
     "oxlint": "^1.88.0",
+    "playwright": "^1.64.1",
     "prisma": "^7.10.1",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3",

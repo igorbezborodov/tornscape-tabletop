@@ -33,3 +33,7 @@ prisma/dev.db
 prisma/dev.db-journal
 dev.db
 dev.db-journal
+
+# Playwright CLI (scripts/browser.mjs): persistent profile + screenshots
+.browser-profile
+screenshots
