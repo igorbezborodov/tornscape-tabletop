@@ -12,6 +12,8 @@
     "preview": "vite preview",
     "db:seed": "prisma db seed",
     "db:studio": "node scripts/prisma-studio.mjs",
+    "api:smoke": "node scripts/api-smoke.mjs",
+    "catalog:report": "node scripts/torn-catalog-report.mjs",
     "browser": "node scripts/browser.mjs",
     "browser:open": "node scripts/browser.mjs open",
     "browser:see": "node scripts/browser.mjs see",

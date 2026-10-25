@@ -257,6 +257,33 @@ async function runStep(page, name, args, ctx) {
       return `clicked ${args[0]}`;
     }
 
+    // Клик по N-му (с нуля) элементу выборки: "click-nth button 12".
+    case "click-nth": {
+      if (!args[0]) throw new Error("укажите CSS-селектор элемента");
+      const index = Number(args[1] ?? 0);
+      if (!Number.isInteger(index) || index < 0) {
+        throw new Error("укажите индекс элемента (с нуля)");
+      }
+      await page.locator(args[0]).nth(index).click();
+      await settle(page);
+      saveCurrentUrl(page);
+      return `clicked ${args[0]}[${index}]`;
+    }
+
+    // Индексы элементов выборки с их текстом: помогает найти нужную кнопку.
+    case "indexes": {
+      if (!args[0]) throw new Error("укажите CSS-селектор элемента");
+      const items = await page.locator(args[0]).evaluateAll((nodes) =>
+        nodes.map((node, index) => ({
+          index,
+          text: (node.textContent ?? "").trim().slice(0, 40),
+          disabled: node.disabled === true,
+        })),
+      );
+      const filtered = args[1] ? items.filter((item) => item.text.includes(args.slice(1).join(" "))) : items;
+      return JSON.stringify(filtered, null, 2);
+    }
+
     case "click-text": {
       const text = args.join(" ");
       if (!text) throw new Error("укажите текст кнопки/ссылки");
@@ -271,6 +298,21 @@ async function runStep(page, name, args, ctx) {
       const value = args.slice(1).join(" ");
       await page.locator(args[0]).first().fill(value);
       return `filled ${args[0]} <- ${JSON.stringify(value)}`;
+    }
+
+    // Выбор значения в <select> по value или видимому тексту опции.
+    // Кавычки не нужны: "select select#domain creation" или "select select#domain Созидание".
+    case "select": {
+      if (!args[0]) throw new Error("укажите CSS-селектор <select>");
+      if (!args[1]) throw new Error("укажите value или текст опции");
+      const target = args.slice(1).join(" ");
+      const locator = page.locator(args[0]).first();
+      const byValue = await locator.locator(`option[value="${target}"]`).count();
+      const option = byValue > 0 ? { value: target } : { label: target };
+      await locator.selectOption(option);
+      await settle(page);
+      saveCurrentUrl(page);
+      return `selected ${args[0]} <- ${JSON.stringify(target)}`;
     }
 
     case "press": {
@@ -307,7 +349,9 @@ async function runStep(page, name, args, ctx) {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const name = args[0] ?? `shot-${stamp}`;
       const file = path.join(SHOTS_DIR, name.endsWith(".png") ? name : `${name}.png`);
-      const selector = args[1] ?? flagValue("selector", undefined);
+      // Аргумент-флаг (например "--full-page") не должен трактоваться как селектор.
+      const selectorArg = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
+      const selector = selectorArg ?? flagValue("selector", undefined);
       if (selector) {
         await page.locator(selector).first().screenshot({ path: file });
       } else {
@@ -334,13 +378,17 @@ function readSteps() {
   const candidate = path.resolve(ROOT, positional[0]);
   if (/\.json$/i.test(positional[0]) && fs.existsSync(candidate)) {
     const parsed = JSON.parse(fs.readFileSync(candidate, "utf8"));
-    return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    // Шаг — либо строка (разбирается как в CLI), либо массив токенов:
+    // так JS-выражения в eval не ломаются о кавычки.
+    return list.map((step) => (Array.isArray(step) ? step.map(String) : tokenize(String(step))));
   }
 
   return raw
     .split(";;")
     .map((step) => step.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((step) => tokenize(step));
 }
 
 async function main() {
@@ -372,7 +420,7 @@ async function main() {
     if (command === "run") {
       const steps = readSteps();
       for (const [index, step] of steps.entries()) {
-        const [name, ...args] = tokenize(step);
+        const [name, ...args] = Array.isArray(step) ? step : tokenize(step);
         if (!name) continue;
         log(`#${index + 1} ${name}${args.length ? ` ${args.join(" ")}` : ""}`);
         const output = await runStep(page, name.toLowerCase(), args, ctx);

@@ -37,3 +37,6 @@ dev.db-journal
 # Playwright CLI (scripts/browser.mjs): persistent profile + screenshots
 .browser-profile
 screenshots
+
+# Рабочие артефакты разбора armybuilder (bundles, скриншоты flow, шаги браузера)
+tmp/

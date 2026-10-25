@@ -1,7 +1,9 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// Структура повторяет публичный каталог https://armybuilder.torn-world.com:
+// домен → фракция → лидер (герой) → доступные юниты / заклинания / снаряжение.
+// Данные загружаются из data/torn-catalog.json скриптом seed.ts.
 
 generator client {
   provider = "prisma-client"
@@ -12,55 +14,327 @@ datasource db {
   provider = "sqlite"
 }
 
-/// A playable faction (Krigmark, Keld, Angelin, Castilia).
-/// SQLite does not support enums, so the faction identity lives in `slug`.
+/// Домен (Созидание, Разрушение, Жизнь, Смерть). Домены ограничивают
+/// доступные заклинания и объединяют фракции.
+model Domain {
+  id        String   @id @default(cuid())
+  /// Идентификатор на armybuilder.torn-world.com.
+  externalId Int?    @unique
+  slug      String   @unique
+  name      String
+  imageUrl  String?
+  sortOrder Int      @default(0)
+  factions  Faction[]
+  rosters   Roster[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("domains")
+}
+
+/// Фракция внутри домена. На armybuilder у фракции нет своих юнитов —
+/// состав армии задаётся выбранным лидером.
 model Faction {
   id          String   @id @default(cuid())
+  externalId  Int?     @unique
   slug        String   @unique
   name        String
   description String?
-  units       Unit[]
+  imageUrl    String?
+  sortOrder   Int      @default(0)
+  domainId    String?
+  domain      Domain?  @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  heroes      Hero[]
   rosters     Roster[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([domainId])
   @@map("factions")
 }
 
-/// A unit template belonging to a faction.
-model Unit {
-  id           String   @id @default(cuid())
-  name         String
-  factionId    String
-  faction      Faction  @relation(fields: [factionId], references: [id], onDelete: Cascade)
-  hp           Int      @default(1)
-  maxHp        Int      @default(1)
-  movement     Int      @default(1)
-  attack       Int      @default(1)
-  defense      Int      @default(1)
-  /// Стоимость юнита в очках для сборки ростера.
-  points       Int      @default(10)
-  /// Уникальные правила/способности юнита (свободный текст).
-  specialRules String?
-  rosters      Roster[]
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+/// Лидер армии. Стоимость героя всегда входит в стоимость ростера.
+/// У одного лидера может быть несколько вариантов (например, Ричард и
+/// «Ричард, Первый Рыцарь») — это отдельные записи.
+model Hero {
+  id               String          @id @default(cuid())
+  externalId       Int?            @unique
+  slug             String          @unique
+  name             String
+  nameEn           String?
+  /// Стоимость лидера в очках.
+  points           Int             @default(0)
+  imageUrl         String?
+  cardImageUrl     String?
+  cardBackImageUrl String?
+  sortOrder        Int             @default(0)
+  factionId        String
+  faction          Faction         @relation(fields: [factionId], references: [id], onDelete: Cascade)
+  unitOptions      HeroUnit[]
+  spellOptions     HeroSpell[]
+  equipmentOptions HeroEquipment[]
+  rosters          Roster[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
 
-  @@unique([factionId, name])
   @@index([factionId])
+  @@map("heroes")
+}
+
+/// Глобальный справочник юнитов: юнит описывается один раз, а доступность
+/// и лимит количества задаются на уровне лидера (см. HeroUnit).
+///
+/// Боевые параметры (hp/movement/attack/defense) armybuilder в API не отдаёт —
+/// они есть только на изображениях карт (`cardImageUrl`). Поэтому поля
+/// nullable: если значение не задано, интерфейс показывает расчётные
+/// («прототипные») характеристики и ссылку на карту.
+model Unit {
+  id           String     @id @default(cuid())
+  externalId   Int?       @unique
+  slug         String     @unique
+  name         String
+  /// Стоимость одной модели в очках.
+  points       Int        @default(0)
+  /// Максимальное количество по умолчанию (уточняется в HeroUnit).
+  limit        Int        @default(1)
+  /// Ключ взаимоисключающих юнитов: в ростер можно взять только один
+  /// вариант с одинаковым `uniqKey` (например, taorgas).
+  uniqKey      String?
+  imageUrl     String?
+  cardImageUrl String?
+  /// Обратная сторона двусторонней карты (лицо/«рубашка» с текстом умений).
+  cardBackImageUrl String?
+  /// Порядок в списке выбора: armybuilder сортирует юнитов по возрастанию
+  /// этого поля (обычные отряды раньше уникальных персонажей).
+  weight       Int        @default(0)
+  hp           Int?
+  maxHp        Int?
+  movement     Int?
+  attack       Int?
+  defense      Int?
+  specialRules String?
+  heroOptions  HeroUnit[]
+  rosterUnits  RosterUnit[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([uniqKey])
   @@map("units")
 }
 
-/// A saved army list built from units of a faction.
-model Roster {
-  id        String   @id @default(cuid())
-  name      String
-  factionId String?
-  faction   Faction? @relation(fields: [factionId], references: [id], onDelete: SetNull)
-  units     Unit[]
+/// Юнит в списке доступных лидеру: здесь хранится лимит количества,
+/// который на armybuilder зависит от конкретного героя.
+model HeroUnit {
+  id        String                @id @default(cuid())
+  heroId    String
+  hero      Hero                  @relation(fields: [heroId], references: [id], onDelete: Cascade)
+  unitId    String
+  unit      Unit                  @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  /// Максимум моделей этого юнита у данного лидера.
+  limit     Int                   @default(1)
+  /// Стоимость модели для этого лидера (совпадает с Unit.points).
+  points    Int                   @default(0)
+  /// Порядок в списке выбора у конкретного лидера: как и на armybuilder,
+  /// список сортируется по weight, а не по позиции в ответе API.
+  weight    Int                   @default(0)
+  sortOrder Int                   @default(0)
+  requires  HeroUnitRequirement[]
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  @@unique([heroId, unitId])
+  @@index([heroId])
+  @@map("hero_units")
+}
+
+/// Требование к другому юниту: например, «Псарь» открывает «Боевых псов»,
+/// а «Осадный Голем» требует «Малого Голема». Армибилдер присылает такие
+/// связи вложенным списком `available_units` без стоимости.
+model HeroUnitRequirement {
+  id       String   @id @default(cuid())
+  optionId String
+  option   HeroUnit @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  unitSlug String
+  unitName String
+  limit    Int      @default(1)
+  points   Int?
+  /// Порядок спутника — тоже weight из вложенного `available_units`.
+  weight   Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([optionId, unitSlug])
+  @@map("hero_unit_requirements")
+}
+
+/// Заклинание. Заклинания бесплатны (в API нет стоимости), но ограничены
+/// доменом и лимитом копий у лидера.
+model Spell {
+  id          String      @id @default(cuid())
+  externalId  Int?        @unique
+  slug        String      @unique
+  name        String
+  limit       Int         @default(1)
+  /// Порядок в списке заклинаний (armybuilder сортирует по weight).
+  weight      Int         @default(0)
+  /// Первый домен заклинания — для группировки в интерфейсе.
+  domainSlug  String?
+  /// Полный список доменов (JSON-массив), т.к. SQLite не поддерживает массивы.
+  domainsJson String?
+  imageUrl    String?
+  heroOptions HeroSpell[]
+  rosterSpells RosterSpell[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([domainSlug])
+  @@map("spells")
+}
+
+/// Заклинание в списке лидера.
+model HeroSpell {
+  id        String   @id @default(cuid())
+  heroId    String
+  hero      Hero     @relation(fields: [heroId], references: [id], onDelete: Cascade)
+  spellId   String
+  spell     Spell    @relation(fields: [spellId], references: [id], onDelete: Cascade)
+  limit     Int      @default(1)
+  /// Порядок заклинания у лидера — weight из ответа armybuilder.
+  weight    Int      @default(0)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([heroId, spellId])
+  @@index([heroId])
+  @@map("hero_spells")
+}
+
+/// Снаряжение: в отличие от заклинаний, стоит очки.
+model Equipment {
+  id             String            @id @default(cuid())
+  externalId     Int?              @unique
+  slug           String            @unique
+  name           String
+  points         Int               @default(0)
+  limit          Int               @default(1)
+  /// Порядок в списке снаряжения (armybuilder сортирует по weight).
+  weight         Int               @default(0)
+  imageUrl       String?
+  heroOptions    HeroEquipment[]
+  rosterEquipment RosterEquipment[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@map("equipment")
+}
+
+/// Снаряжение в списке лидера.
+model HeroEquipment {
+  id          String    @id @default(cuid())
+  heroId      String
+  hero        Hero      @relation(fields: [heroId], references: [id], onDelete: Cascade)
+  equipmentId String
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+  limit       Int       @default(1)
+  points      Int       @default(0)
+  /// Порядок снаряжения у лидера — weight из ответа armybuilder.
+  weight      Int       @default(0)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([heroId, equipmentId])
+  @@index([heroId])
+  @@map("hero_equipment")
+}
+
+/// Формат ростера: 200 / 300 / 400 очков (как в селекторе armybuilder).
+model RosterFormat {
+  id         String   @id @default(cuid())
+  externalId Int?     @unique
+  points     Int      @unique
+  isDefault  Boolean  @default(false)
+  rosters    Roster[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("roster_formats")
+}
+
+/// Сохранённый ростер: домен + фракция + лидер + выбранные юниты,
+/// заклинания и снаряжение. Повторяет структуру `structure` из
+/// POST /rosters.json у armybuilder.
+model Roster {
+  id         String            @id @default(cuid())
+  name       String
+  domainId   String?
+  domain     Domain?           @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  factionId  String?
+  faction    Faction?          @relation(fields: [factionId], references: [id], onDelete: SetNull)
+  heroId     String?
+  hero       Hero?             @relation(fields: [heroId], references: [id], onDelete: SetNull)
+  formatId   String?
+  format     RosterFormat?     @relation(fields: [formatId], references: [id], onDelete: SetNull)
+  /// Лимит очков выбранного формата.
+  maxPoints  Int               @default(200)
+  /// Набранная стоимость (лидер + юниты + снаряжение).
+  points     Int               @default(0)
+  units      RosterUnit[]
+  spells     RosterSpell[]
+  equipment  RosterEquipment[]
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@index([domainId])
   @@index([factionId])
+  @@index([heroId])
   @@map("rosters")
+}
+
+/// Выбранный юнит ростера вместе с количеством моделей.
+model RosterUnit {
+  id        String   @id @default(cuid())
+  rosterId  String
+  roster    Roster   @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  unitId    String
+  unit      Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  quantity  Int      @default(1)
+  points    Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([rosterId, unitId])
+  @@map("roster_units")
+}
+
+/// Выбранное заклинание ростера.
+model RosterSpell {
+  id        String   @id @default(cuid())
+  rosterId  String
+  roster    Roster   @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  spellId   String
+  spell     Spell    @relation(fields: [spellId], references: [id], onDelete: Cascade)
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([rosterId, spellId])
+  @@map("roster_spells")
+}
+
+/// Выбранное снаряжение ростера.
+model RosterEquipment {
+  id          String    @id @default(cuid())
+  rosterId    String
+  roster      Roster    @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  equipmentId String
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+  quantity    Int       @default(1)
+  points      Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([rosterId, equipmentId])
+  @@map("roster_equipment")
 }

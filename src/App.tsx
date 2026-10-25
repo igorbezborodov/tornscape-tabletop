@@ -3,6 +3,15 @@ import HexGrid from './components/HexGrid';
 import DiceRoller from './components/DiceRoller';
 import ArmyBuilder, { type RosterMap } from './components/ArmyBuilder';
 import { playerTitle, useGameStore } from './store/gameStore';
+import { type RosterSelection, selectionPoints, selectionUnitCount } from './lib/rosterRules';
+
+// Краткая сводка по ростеру: лидер, число моделей и затраченные очки.
+const describeRoster = (selection: RosterSelection): string => {
+  const hero = selection.heroName || 'без лидера';
+  const models = selectionUnitCount(selection);
+  const points = selectionPoints(selection);
+  return `${hero}, ${models} юн., ${points}/${selection.formatPoints} оч.`;
+};
 
 function App() {
   const [isGameStarted, setIsGameStarted] = useState(false);
@@ -57,7 +66,7 @@ function App() {
       <p style={{ opacity: 0.65, fontSize: 15, marginTop: -6 }}>
         В строю Игрока 1: {unitsP1} юн. · Игрока 2: {unitsP2} юн.
         {rosters
-          ? ` (ростеры: ${rosters.player1.length} / ${rosters.player2.length} юн.)`
+          ? ` · Ростеры: ${describeRoster(rosters.player1)} / ${describeRoster(rosters.player2)}`
           : ''}
       </p>
 
