@@ -66,6 +66,8 @@ async function main() {
       movement: 3,
       attack: 2,
       defense: 2,
+      points: 30,
+      specialRules: "Стойкость: игнорирует первый полученный урон за ход.",
     },
     {
       name: "Стрелок Ангельна",
@@ -75,6 +77,8 @@ async function main() {
       movement: 2,
       attack: 3,
       defense: 1,
+      points: 35,
+      specialRules: "Залп: может атаковать на расстоянии до 3 гексов.",
     },
     {
       name: "Капитан Кригмарка",
@@ -84,6 +88,8 @@ async function main() {
       movement: 3,
       attack: 3,
       defense: 3,
+      points: 60,
+      specialRules: "Приказ: союзники в соседних гексах получают +1 к защите.",
     },
   ];
 

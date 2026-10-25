@@ -29,18 +29,22 @@ model Faction {
 
 /// A unit template belonging to a faction.
 model Unit {
-  id        String   @id @default(cuid())
-  name      String
-  factionId String
-  faction   Faction  @relation(fields: [factionId], references: [id], onDelete: Cascade)
-  hp        Int      @default(1)
-  maxHp     Int      @default(1)
-  movement  Int      @default(1)
-  attack    Int      @default(1)
-  defense   Int      @default(1)
-  rosters   Roster[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  name         String
+  factionId    String
+  faction      Faction  @relation(fields: [factionId], references: [id], onDelete: Cascade)
+  hp           Int      @default(1)
+  maxHp        Int      @default(1)
+  movement     Int      @default(1)
+  attack       Int      @default(1)
+  defense      Int      @default(1)
+  /// Стоимость юнита в очках для сборки ростера.
+  points       Int      @default(10)
+  /// Уникальные правила/способности юнита (свободный текст).
+  specialRules String?
+  rosters      Roster[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([factionId, name])
   @@index([factionId])
