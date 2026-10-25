@@ -1,0 +1,62 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// A playable faction (Krigmark, Keld, Angelin, Castilia).
+/// SQLite does not support enums, so the faction identity lives in `slug`.
+model Faction {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  units       Unit[]
+  rosters     Roster[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("factions")
+}
+
+/// A unit template belonging to a faction.
+model Unit {
+  id        String   @id @default(cuid())
+  name      String
+  factionId String
+  faction   Faction  @relation(fields: [factionId], references: [id], onDelete: Cascade)
+  hp        Int      @default(1)
+  maxHp     Int      @default(1)
+  movement  Int      @default(1)
+  attack    Int      @default(1)
+  defense   Int      @default(1)
+  rosters   Roster[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([factionId, name])
+  @@index([factionId])
+  @@map("units")
+}
+
+/// A saved army list built from units of a faction.
+model Roster {
+  id        String   @id @default(cuid())
+  name      String
+  factionId String?
+  faction   Faction? @relation(fields: [factionId], references: [id], onDelete: SetNull)
+  units     Unit[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([factionId])
+  @@map("rosters")
+}
