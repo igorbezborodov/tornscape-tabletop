@@ -1,24 +1,64 @@
+import { useState } from 'react';
 import HexGrid from './components/HexGrid';
 import DiceRoller from './components/DiceRoller';
-import { useGameStore } from './store/gameStore';
+import ArmyBuilder, { type RosterMap } from './components/ArmyBuilder';
+import { playerTitle, useGameStore } from './store/gameStore';
 
 function App() {
-  const { units, activeUnitId, currentPlayer, hasActivated, logs, endTurn } = useGameStore();
+  const [isGameStarted, setIsGameStarted] = useState(false);
+  // Ростеры держим в App, чтобы при возврате на экран сборки выбор не терялся.
+  const [rosters, setRosters] = useState<RosterMap | undefined>(undefined);
+
+  const { units, activeUnitId, currentPlayer, hasActivated, logs, endTurn, resetGame } = useGameStore();
   const active = units.find(u => u.id === activeUnitId);
+
+  // Юниты попадают в стор только после старта — на экране сборки их нет
+  const unitsP1 = units.filter(u => u.player === 'player1' && u.hp > 0).length;
+  const unitsP2 = units.filter(u => u.player === 'player2' && u.hp > 0).length;
+
+  const backToBuilder = () => {
+    resetGame();
+    setIsGameStarted(false);
+  };
+
+  if (!isGameStarted) {
+    return (
+      <ArmyBuilder
+        initialRosters={rosters}
+        onStart={selectedRosters => {
+          setRosters(selectedRosters);
+          setIsGameStarted(true);
+        }}
+      />
+    );
+  }
 
   return (
     <div style={{ padding: 20, fontFamily: 'sans-serif', fontSize: 17, background: '#0a1220', minHeight: '100vh', color: '#fff' }}>
       <h1 style={{ marginTop: 0, display: 'flex', alignItems: 'center', gap: 20, fontSize: 34 }}>
         Tornscape — Прототип
         <span style={{ fontSize: '22px', background: currentPlayer === 'player1' ? '#4a6a8a' : '#8a4a4a', padding: '7px 18px', borderRadius: '22px' }}>
-          Ход: {currentPlayer === 'player1' ? 'Игрок 1 (Синие)' : 'Игрок 2 (Красные)'}
+          Ход: {playerTitle(currentPlayer)}
         </span>
+        <button
+          onClick={backToBuilder}
+          style={{ marginLeft: 'auto', fontSize: 15, padding: '8px 16px', background: 'transparent', color: '#fff', border: '1px solid #55708a', borderRadius: 8, cursor: 'pointer' }}
+        >
+          Изменить ростер
+        </button>
       </h1>
       
       <p style={{ opacity: 0.75, fontSize: 17, lineHeight: 1.5 }}>
         Поле состоит из гексонов — групп из 7 гексов, обведённых светлой линией по контуру.
         🛡️ — укрытие (+1 кубик к защите). Синие — движение, Красные — атака.
         Колесо мыши приближает и отдаляет поле относительно курсора, перетаскивание мышью двигает камеру.
+      </p>
+
+      <p style={{ opacity: 0.65, fontSize: 15, marginTop: -6 }}>
+        В строю Игрока 1: {unitsP1} юн. · Игрока 2: {unitsP2} юн.
+        {rosters
+          ? ` (ростеры: ${rosters.player1.length} / ${rosters.player2.length} юн.)`
+          : ''}
       </p>
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 20 }}>

@@ -1,9 +1,14 @@
 import { create } from 'zustand';
-import type { HexCoord, Unit, TerrainData } from '../types/game';
-import { hexKey, reachableHexes, hexDistance, generateHexsonGrid, generateTerrain } from '../lib/hex';
+import type { HexCoord, PlayerId, RosterUnitInput, Unit, TerrainData } from '../types/game';
+import {
+  hexKey,
+  hexToPixel,
+  reachableHexes,
+  hexDistance,
+  generateHexsonGrid,
+  generateTerrain,
+} from '../lib/hex';
 import { rollDice } from '../lib/dice';
-
-type Player = 'player1' | 'player2';
 
 type CombatLog = {
   id: string;
@@ -13,7 +18,114 @@ type CombatLog = {
 
 const ROWS = 7;
 const { hexes: initialHexes, hexsonCenters: initialHexsonCenters } = generateHexsonGrid(ROWS);
-const initialTerrain = generateTerrain(initialHexes);
+
+/** Доля поля (по горизонтали) от каждого края, где разрешён спавн. */
+const SPAWN_ZONE_SHARE = 0.25;
+
+const playerLabel = (player: PlayerId): string =>
+  player === 'player1' ? 'Игрока 1' : 'Игрока 2';
+
+const playerTitle = (player: PlayerId): string =>
+  player === 'player1' ? 'Игрок 1 (Синие)' : 'Игрок 2 (Красные)';
+
+const inBounds = (h: HexCoord) => initialHexes.some(hex => hex.q === h.q && hex.r === h.r);
+
+const hexPixels = initialHexes.map(hex => ({ hex, ...hexToPixel(hex) }));
+
+/**
+ * Подбирает гексы для расстановки армии на одном из краёв поля.
+ *
+ * Зона спавна вычисляется от фактических границ сгенерированного поля (а не
+ * задаётся «магическими» координатами), поэтому юниты всегда попадают на
+ * существующие гексы. Внутри зоны предпочтение отдаётся гексам ближе к
+ * середине поля по вертикали, а между юнитами выдерживается зазор: сначала
+ * пытаемся разнести их на 2 гекса, затем на 1, в крайнем случае ставим рядом.
+ */
+const pickSpawnHexes = (
+  count: number,
+  side: 'left' | 'right',
+  taken: Set<string>,
+): HexCoord[] => {
+  if (count <= 0) return [];
+
+  const xs = hexPixels.map(p => p.x);
+  const ys = hexPixels.map(p => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const span = maxX - minX || 1;
+  const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+
+  const zone = hexPixels.filter(p =>
+    side === 'left'
+      ? p.x <= minX + span * SPAWN_ZONE_SHARE
+      : p.x >= maxX - span * SPAWN_ZONE_SHARE,
+  );
+
+  const ordered = [...zone].sort((a, b) => {
+    const da = Math.abs(a.y - centerY);
+    const db = Math.abs(b.y - centerY);
+    if (da !== db) return da - db;
+    return side === 'left' ? a.x - b.x : b.x - a.x;
+  });
+
+  const chosen: HexCoord[] = [];
+
+  for (const minGap of [2, 1, 0]) {
+    for (const candidate of ordered) {
+      if (chosen.length >= count) break;
+
+      const key = hexKey(candidate.hex);
+      if (taken.has(key)) continue;
+      if (chosen.some(h => hexDistance(h, candidate.hex) < minGap)) continue;
+
+      chosen.push(candidate.hex);
+      taken.add(key);
+    }
+    if (chosen.length >= count) break;
+  }
+
+  // Страховка: если в зоне спавна не хватило места (очень большой ростер),
+  // добираем ближайшие свободные гексы по всему полю, чтобы не потерять юнита.
+  if (chosen.length < count) {
+    const rest = hexPixels
+      .filter(p => !taken.has(hexKey(p.hex)))
+      .sort((a, b) =>
+        side === 'left'
+          ? a.x - b.x || Math.abs(a.y - centerY) - Math.abs(b.y - centerY)
+          : b.x - a.x || Math.abs(a.y - centerY) - Math.abs(b.y - centerY),
+      );
+
+    for (const candidate of rest) {
+      if (chosen.length >= count) break;
+      chosen.push(candidate.hex);
+      taken.add(hexKey(candidate.hex));
+    }
+  }
+
+  return chosen;
+};
+
+const buildArmy = (
+  roster: RosterUnitInput[],
+  player: PlayerId,
+  side: 'left' | 'right',
+  taken: Set<string>,
+): Unit[] => {
+  const spawns = pickSpawnHexes(roster.length, side, taken);
+
+  return roster.slice(0, spawns.length).map((template, index) => ({
+    id: `${player === 'player1' ? 'p1' : 'p2'}-${template.id}-${index}`,
+    name: template.name,
+    player,
+    faction: template.factionSlug ?? 'unknown',
+    position: spawns[index],
+    hp: template.maxHp,
+    maxHp: template.maxHp,
+    movement: template.movement,
+    attack: template.attack,
+    defense: template.defense,
+  }));
+};
 
 type GameState = {
   grid: HexCoord[];
@@ -22,64 +134,99 @@ type GameState = {
   units: Unit[];
   activeUnitId: string | null;
   reachable: HexCoord[];
-  currentPlayer: Player;
+  currentPlayer: PlayerId;
   hasActivated: boolean;
   logs: CombatLog[];
-  
+
+  /**
+   * Стартует новую партию по ростерам из ArmyBuilder: очищает лог, сбрасывает
+   * ход и расставляет юнитов на противоположных краях поля.
+   */
+  startGameWithRosters: (p1Units: RosterUnitInput[], p2Units: RosterUnitInput[]) => void;
+  /** Возвращает игру в исходное состояние (экран сборки). */
+  resetGame: () => void;
+
   selectUnit: (id: string | null) => void;
   moveUnit: (id: string, to: HexCoord) => boolean;
   attackUnit: (attackerId: string, targetId: string) => void;
   endTurn: () => void;
 };
 
-const factionToPlayer = (faction: string): Player => 
-  (faction === 'krigmark' || faction === 'castilia') ? 'player1' : 'player2';
-
-const inBounds = (h: HexCoord) => initialHexes.some(hex => hex.q === h.q && hex.r === h.r);
+const createNewLog = (text: string): CombatLog => ({
+  id: Math.random().toString(36).slice(2),
+  text,
+  timestamp: Date.now(),
+});
 
 export const useGameStore = create<GameState>((set, get) => ({
   grid: initialHexes,
   hexsonCenters: initialHexsonCenters,
-  terrain: initialTerrain,
-  units: [
-    { id: 'u1', name: 'Воин Кригмарка',  faction: 'krigmark',
-      position: { q: 2, r: 1 }, hp: 3, maxHp: 3,
-      movement: 3, attack: 2, defense: 2 },
-    { id: 'u2', name: 'Стрелок Ангельна', faction: 'angelin',
-      position: { q: 18, r: -2 }, hp: 2, maxHp: 2,
-      movement: 2, attack: 3, defense: 1 },
-  ],
+  terrain: generateTerrain(initialHexes),
+  units: [],
   activeUnitId: null,
   reachable: [],
   currentPlayer: 'player1',
   hasActivated: false,
-  logs: [{ id: 'start', text: 'Игра началась. Ход Игрока 1.', timestamp: Date.now() }],
+  logs: [],
+
+  startGameWithRosters: (p1Units, p2Units) => {
+    const taken = new Set<string>();
+    const army1 = buildArmy(p1Units, 'player1', 'left', taken);
+    const army2 = buildArmy(p2Units, 'player2', 'right', taken);
+
+    set({
+      // Новое поле — новые укрытия, чтобы партии не были одинаковыми
+      terrain: generateTerrain(initialHexes),
+      units: [...army1, ...army2],
+      currentPlayer: 'player1',
+      hasActivated: false,
+      activeUnitId: null,
+      reachable: [],
+      logs: [
+        createNewLog(
+          `Игра началась! Игрок 1 выставил ${army1.length} юн., Игрок 2 — ${army2.length} юн.`,
+        ),
+      ],
+    });
+  },
+
+  resetGame: () =>
+    set({
+      units: [],
+      activeUnitId: null,
+      reachable: [],
+      currentPlayer: 'player1',
+      hasActivated: false,
+      logs: [],
+    }),
 
   selectUnit: (id) => {
     const s = get();
     if (s.hasActivated) return;
     if (!id) return set({ activeUnitId: null, reachable: [] });
-    
+
     const unit = s.units.find(u => u.id === id);
     if (!unit || unit.hp <= 0) return;
 
-    if (factionToPlayer(unit.faction) !== s.currentPlayer) {
-      return addLog(`Это не ваш юнит! Сейчас ход ${s.currentPlayer === 'player1' ? 'Игрока 1' : 'Игрока 2'}`);
+    if (unit.player !== s.currentPlayer) {
+      return addLog(`Это не ваш юнит! Сейчас ход ${playerLabel(s.currentPlayer)}.`);
     }
 
+    // Занятые гексы непроходимы: и свои, и чужие. Атака идёт через
+    // список целей в радиусе, а не «шагом» на гекс противника.
     const blocked = new Set(
-      s.units.filter(u => u.id !== id && u.hp > 0 && factionToPlayer(u.faction) !== s.currentPlayer)
-        .map(u => hexKey(u.position)),
+      s.units.filter(u => u.id !== id && u.hp > 0).map(u => hexKey(u.position)),
     );
-    const reachable = reachableHexes(
-      unit.position, unit.movement, blocked, inBounds,
-    );
-    
-    const enemiesInRange = s.units.filter(u => 
-      u.hp > 0 && 
-      factionToPlayer(u.faction) !== s.currentPlayer && 
-      hexDistance(unit.position, u.position) <= unit.movement + 1
-    ).map(u => u.position);
+    const reachable = reachableHexes(unit.position, unit.movement, blocked, inBounds);
+
+    const enemiesInRange = s.units
+      .filter(
+        u =>
+          u.hp > 0 &&
+          u.player !== s.currentPlayer &&
+          hexDistance(unit.position, u.position) <= unit.movement + 1,
+      )
+      .map(u => u.position);
 
     set({ activeUnitId: id, reachable: [...reachable, ...enemiesInRange] });
   },
@@ -89,9 +236,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     const unit = s.units.find(u => u.id === id);
     if (!unit) return false;
 
-    const targetUnit = s.units.find(u => u.hp > 0 && u.position.q === to.q && u.position.r === to.r);
+    const targetUnit = s.units.find(
+      u => u.hp > 0 && u.position.q === to.q && u.position.r === to.r,
+    );
     if (targetUnit) {
-      if (factionToPlayer(targetUnit.faction) !== s.currentPlayer) {
+      if (targetUnit.player !== s.currentPlayer) {
         get().attackUnit(id, targetUnit.id);
         return true;
       }
@@ -122,7 +271,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const attackRolls = rollDice(attacker.attack, 6);
     const defenseRolls = rollDice(target.defense + coverBonus, 6);
-    
+
     const attackSum = attackRolls.reduce((a, b) => a + b, 0);
     const defenseSum = defenseRolls.reduce((a, b) => a + b, 0);
 
@@ -130,13 +279,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     let logText = `${attacker.name} атакует ${target.name}. `;
     logText += `Атака: [${attackRolls.join(',')}] = ${attackSum}. `;
-    logText += `Защита${coverBonus > 0 ? ' (в укрытии +' + coverBonus + ')' : ''}: [${defenseRolls.join(',')}] = ${defenseSum}. `;
-    
+    logText += `Защита${coverBonus > 0 ? ` (в укрытии +${coverBonus})` : ''}: [${defenseRolls.join(',')}] = ${defenseSum}. `;
+
     if (damage > 0) {
       logText += `💥 Нанесено ${damage} урона!`;
       if (target.hp - damage <= 0) logText += ` ${target.name} уничтожен!`;
     } else {
-      logText += `Промах / Заблокировано.`;
+      logText += 'Промах / Заблокировано.';
     }
 
     set({
@@ -152,19 +301,22 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   endTurn: () => {
     const s = get();
-    const nextPlayer = s.currentPlayer === 'player1' ? 'player2' : 'player1';
+    const nextPlayer: PlayerId = s.currentPlayer === 'player1' ? 'player2' : 'player1';
     set({
       currentPlayer: nextPlayer,
       hasActivated: false,
       activeUnitId: null,
       reachable: [],
     });
-    addLog(`Ход переходит к ${nextPlayer === 'player1' ? 'Игроку 1' : 'Игроку 2'}.`);
+    addLog(`Ход переходит к ${playerLabel(nextPlayer)}.`);
   },
 }));
 
+/** Текущий игрок в читаемом виде — используется в UI. */
+export { playerTitle };
+
 function addLog(text: string) {
   useGameStore.setState(s => ({
-    logs: [{ id: Math.random().toString(), text, timestamp: Date.now() }, ...s.logs]
+    logs: [createNewLog(text), ...s.logs],
   }));
 }

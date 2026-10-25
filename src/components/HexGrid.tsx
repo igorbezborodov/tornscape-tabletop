@@ -341,8 +341,9 @@ const HexGrid = () => {
                 {unit && (
                   <g>
                     <circle cx={x} cy={y} r={UNIT_RADIUS}
-                            fill={unit.faction === 'krigmark' || unit.faction === 'castilia' ? '#e0e0e0' : '#a0c0e0'}
-                            stroke="#000" strokeWidth={HEX_SIZE * 0.03} />
+                            fill={unit.player === 'player1' ? '#a0c0e0' : '#e0b0b0'}
+                            stroke={unit.player === 'player1' ? '#1d3a5c' : '#6b2020'}
+                            strokeWidth={HEX_SIZE * 0.04} />
                     <text x={x} y={y + UNIT_NAME_FONT * 0.36} textAnchor="middle" fontSize={UNIT_NAME_FONT} fontWeight="bold" fill="#000">
                       {unit.name.slice(0, 2)}
                     </text>
