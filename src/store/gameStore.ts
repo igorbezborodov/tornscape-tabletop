@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { HexCoord, Unit } from '../types/game';
-import { hexKey, reachableHexes, hexDistance } from '../lib/hex';
+import type { HexCoord, Unit, TerrainData } from '../types/game';
+import { hexKey, reachableHexes, hexDistance, generateHexsonGrid, generateTerrain } from '../lib/hex';
 import { rollDice } from '../lib/dice';
 
 type Player = 'player1' | 'player2';
@@ -11,8 +11,14 @@ type CombatLog = {
   timestamp: number;
 };
 
+const ROWS = 7;
+const { hexes: initialHexes, hexsonCenters: initialHexsonCenters } = generateHexsonGrid(ROWS);
+const initialTerrain = generateTerrain(initialHexes);
+
 type GameState = {
-  gridSize: { cols: number; rows: number };
+  grid: HexCoord[];
+  hexsonCenters: Set<string>;
+  terrain: Map<string, TerrainData>;
   units: Unit[];
   activeUnitId: string | null;
   reachable: HexCoord[];
@@ -26,21 +32,21 @@ type GameState = {
   endTurn: () => void;
 };
 
-// Пока привяжем фракции к игрокам жестко для прототипа
 const factionToPlayer = (faction: string): Player => 
   (faction === 'krigmark' || faction === 'castilia') ? 'player1' : 'player2';
 
-const inBounds = (h: HexCoord, s: { cols: number; rows: number }) =>
-  h.q >= 0 && h.q < s.cols && h.r >= 0 && h.r < s.rows;
+const inBounds = (h: HexCoord) => initialHexes.some(hex => hex.q === h.q && hex.r === h.r);
 
 export const useGameStore = create<GameState>((set, get) => ({
-  gridSize: { cols: 6, rows: 6 },
+  grid: initialHexes,
+  hexsonCenters: initialHexsonCenters,
+  terrain: initialTerrain,
   units: [
     { id: 'u1', name: 'Воин Кригмарка',  faction: 'krigmark',
-      position: { q: 1, r: 1 }, hp: 3, maxHp: 3,
+      position: { q: 2, r: 1 }, hp: 3, maxHp: 3,
       movement: 3, attack: 2, defense: 2 },
     { id: 'u2', name: 'Стрелок Ангельна', faction: 'angelin',
-      position: { q: 4, r: 4 }, hp: 2, maxHp: 2,
+      position: { q: 18, r: -2 }, hp: 2, maxHp: 2,
       movement: 2, attack: 3, defense: 1 },
   ],
   activeUnitId: null,
@@ -51,32 +57,28 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   selectUnit: (id) => {
     const s = get();
-    if (s.hasActivated) return; // Нельзя выбирать юнитов после действия
+    if (s.hasActivated) return;
     if (!id) return set({ activeUnitId: null, reachable: [] });
     
     const unit = s.units.find(u => u.id === id);
     if (!unit || unit.hp <= 0) return;
 
-    // Проверяем, принадлежит ли юнит текущему игроку
     if (factionToPlayer(unit.faction) !== s.currentPlayer) {
       return addLog(`Это не ваш юнит! Сейчас ход ${s.currentPlayer === 'player1' ? 'Игрока 1' : 'Игрока 2'}`);
     }
 
-    // Считаем зону движения (с учетом врагов, но не учитывая союзников, чтобы можно было пройти сквозь них)
     const blocked = new Set(
       s.units.filter(u => u.id !== id && u.hp > 0 && factionToPlayer(u.faction) !== s.currentPlayer)
         .map(u => hexKey(u.position)),
     );
     const reachable = reachableHexes(
-      unit.position, unit.movement, blocked,
-      h => inBounds(h, s.gridSize),
+      unit.position, unit.movement, blocked, inBounds,
     );
     
-    // Добавляем в reachable позиции врагов для атаки (чтобы подсветить их красным)
     const enemiesInRange = s.units.filter(u => 
       u.hp > 0 && 
       factionToPlayer(u.faction) !== s.currentPlayer && 
-      hexDistance(unit.position, u.position) <= unit.movement + 1 // Атака на 1 дальше движения
+      hexDistance(unit.position, u.position) <= unit.movement + 1
     ).map(u => u.position);
 
     set({ activeUnitId: id, reachable: [...reachable, ...enemiesInRange] });
@@ -87,14 +89,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const unit = s.units.find(u => u.id === id);
     if (!unit) return false;
 
-    // Проверяем, не пытаемся ли мы встать на врага
     const targetUnit = s.units.find(u => u.hp > 0 && u.position.q === to.q && u.position.r === to.r);
     if (targetUnit) {
       if (factionToPlayer(targetUnit.faction) !== s.currentPlayer) {
         get().attackUnit(id, targetUnit.id);
         return true;
       }
-      return false; // Нельзя вставать на своих
+      return false;
     }
 
     const isOk = s.reachable.some(h => h.q === to.q && h.r === to.r);
@@ -116,9 +117,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     const target = s.units.find(u => u.id === targetId);
     if (!attacker || !target) return;
 
-    // Бросок атаки и защиты
+    const targetTerrain = s.terrain.get(hexKey(target.position));
+    const coverBonus = targetTerrain ? targetTerrain.coverBonus : 0;
+
     const attackRolls = rollDice(attacker.attack, 6);
-    const defenseRolls = rollDice(target.defense, 6);
+    const defenseRolls = rollDice(target.defense + coverBonus, 6);
     
     const attackSum = attackRolls.reduce((a, b) => a + b, 0);
     const defenseSum = defenseRolls.reduce((a, b) => a + b, 0);
@@ -127,7 +130,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     let logText = `${attacker.name} атакует ${target.name}. `;
     logText += `Атака: [${attackRolls.join(',')}] = ${attackSum}. `;
-    logText += `Защита: [${defenseRolls.join(',')}] = ${defenseSum}. `;
+    logText += `Защита${coverBonus > 0 ? ' (в укрытии +' + coverBonus + ')' : ''}: [${defenseRolls.join(',')}] = ${defenseSum}. `;
     
     if (damage > 0) {
       logText += `💥 Нанесено ${damage} урона!`;
@@ -160,7 +163,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 }));
 
-// Вспомогательная функция для логов
 function addLog(text: string) {
   useGameStore.setState(s => ({
     logs: [{ id: Math.random().toString(), text, timestamp: Date.now() }, ...s.logs]

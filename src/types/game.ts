@@ -13,3 +13,10 @@ export type Unit = {
   attack: number;
   defense: number;
 };
+
+export type TerrainType = 'plain' | 'cover';
+
+export type TerrainData = {
+  type: TerrainType;
+  coverBonus: number;
+};
