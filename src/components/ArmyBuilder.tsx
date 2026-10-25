@@ -17,6 +17,7 @@ import {
 import {
   addCompanion,
   addEquipment,
+  addSpell,
   addUnit,
   assignEquipmentBearer,
   canAddCompanion,
@@ -32,6 +33,7 @@ import {
   quantityOf,
   removeCompanion,
   removeEquipment,
+  removeSpell,
   removeUnit,
   removeUnitAll,
   rosterBearers,
@@ -42,7 +44,6 @@ import {
   spellQuantityOf,
   spellSlotsLeft,
   SPELLS_PER_ROSTER,
-  toggleSpell,
   uniqConflictFor,
   type RosterCompanionOption,
   type RosterSelection,
@@ -966,11 +967,8 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
           >
             {heroDetail.spells.map(spell => {
               const quantity = spellQuantityOf(selection, spell.slug);
+              // Добавление ограничено и лимитом карты, и общими 10 заклинаниями.
               const verdict = canAddSpell(selection, spell);
-
-              // Снять карту можно всегда, даже когда общий лимит уже набран:
-              // иначе набор из 10 заклинаний нельзя было бы поменять.
-              const clickable = verdict.allowed || quantity > 0;
 
               return (
                 <div
@@ -998,25 +996,49 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
                     {spell.name}
                   </button>
 
-                  <button
-                    onClick={() => patchSelection(current => toggleSpell(current, spell))}
-                    disabled={!clickable}
-                    title={verdict.reason ?? 'Щёлкните, чтобы взять или убрать'}
-                    style={{
-                      flexShrink: 0,
-                      minWidth: 40,
-                      padding: '4px 8px',
-                      fontSize: 12,
-                      borderRadius: 5,
-                      border: 'none',
-                      background: quantity > 0 ? '#c9a227' : '#55708a',
-                      color: quantity > 0 ? '#000' : '#fff',
-                      cursor: clickable ? 'pointer' : 'not-allowed',
-                      opacity: clickable ? 1 : 0.5,
-                    }}
-                  >
-                    {quantity > 0 ? `${quantity}/${spell.limit}` : `+ ${spell.limit}`}
-                  </button>
+                  {/* Снятие не зависит от общего лимита: набор из 10
+                      заклинаний всегда можно пересобрать. */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <button
+                      onClick={() => patchSelection(current => removeSpell(current, spell.slug))}
+                      disabled={quantity === 0}
+                      title="Убрать одно заклинание"
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 4,
+                        border: 'none',
+                        cursor: quantity === 0 ? 'not-allowed' : 'pointer',
+                        opacity: quantity === 0 ? 0.4 : 1,
+                        background: '#55708a',
+                        color: '#fff',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      −
+                    </button>
+                    <span style={{ minWidth: 34, textAlign: 'center', fontWeight: 'bold' }}>
+                      {quantity} / {spell.limit}
+                    </span>
+                    <button
+                      onClick={() => patchSelection(current => addSpell(current, spell))}
+                      disabled={!verdict.allowed}
+                      title={verdict.reason ?? 'Добавить одно заклинание'}
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 4,
+                        border: 'none',
+                        cursor: verdict.allowed ? 'pointer' : 'not-allowed',
+                        opacity: verdict.allowed ? 1 : 0.4,
+                        background: PLAYER_META[activePlayer].accent,
+                        color: '#fff',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
               );
             })}

@@ -441,35 +441,33 @@ export const canAddSpell = (
   return { allowed: true, reason: null };
 };
 
-export const toggleSpell = (
-  selection: RosterSelection,
-  spell: RosterSpellOption,
-): RosterSelection => {
-  const selected = selection.spells.find((item) => item.slug === spell.slug);
-  // Снимать заклинания можно всегда, а добирать — только пока не набрано 10.
-  const atCap = selectionSpellCount(selection) >= SPELLS_PER_ROSTER;
+export const addSpell = (selection: RosterSelection, spell: RosterSpellOption): RosterSelection => {
+  if (!canAddSpell(selection, spell).allowed) return selection;
 
-  if (selected) {
-    const nextQuantity = selected.quantity + 1;
+  const existing = selection.spells.find((item) => item.slug === spell.slug);
 
-    if (nextQuantity > spell.limit) {
-      return { ...selection, spells: selection.spells.filter((item) => item.slug !== spell.slug) };
-    }
-
-    if (atCap) return selection;
-
+  if (existing) {
     return {
       ...selection,
       spells: selection.spells.map((item) =>
-        item.slug === spell.slug ? { ...item, quantity: nextQuantity } : item,
+        item.slug === spell.slug ? { ...item, quantity: item.quantity + 1 } : item,
       ),
     };
   }
 
-  if (atCap) return selection;
-
   return { ...selection, spells: [...selection.spells, { ...spell, quantity: 1 }] };
 };
+
+/** Снятие карты не ограничено общим лимитом: иначе полный набор нельзя пересобрать. */
+export const removeSpell = (selection: RosterSelection, slug: string): RosterSelection => ({
+  ...selection,
+  spells: selection.spells.flatMap((spell) => {
+    if (spell.slug !== slug) return [spell];
+    if (spell.quantity <= 1) return [];
+    return [{ ...spell, quantity: spell.quantity - 1 }];
+  }),
+});
+
 
 export const canAddEquipment = (
   selection: RosterSelection,
