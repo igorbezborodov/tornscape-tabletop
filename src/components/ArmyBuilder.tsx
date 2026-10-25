@@ -37,8 +37,11 @@ import {
   rosterBearers,
   selectionPoints,
   selectionProblems,
+  selectionSpellCount,
   selectionUnitCount,
   spellQuantityOf,
+  spellSlotsLeft,
+  SPELLS_PER_ROSTER,
   toggleSpell,
   uniqConflictFor,
   type RosterCompanionOption,
@@ -883,6 +886,11 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
     // строится из текущего ростера.
     const bearerOptions = rosterBearers(selection);
 
+    // Количество заклинаний строго фиксировано: 10 — обязательный минимум
+    // и максимум одновременно.
+    const spellCount = selectionSpellCount(selection);
+    const slotsLeft = spellSlotsLeft(selection);
+
     /** Иконка карты — открывает модальную карточку заклинания/снаряжения. */
     const renderOptionIcon = (
       imageUrl: string | null,
@@ -930,7 +938,23 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
         }}
       >
         <div>
-          <h3 style={{ margin: '0 0 8px', fontSize: 17 }}>Заклинания (бесплатно)</h3>
+          <h3 style={{ margin: '0 0 8px', fontSize: 17 }}>
+            Заклинания (бесплатно){' '}
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 'bold',
+                color: spellCount === SPELLS_PER_ROSTER ? '#8fce8f' : '#c9a227',
+              }}
+            >
+              {spellCount} / {SPELLS_PER_ROSTER}
+            </span>
+          </h3>
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6, lineHeight: 1.4 }}>
+            {slotsLeft === 0
+              ? 'Набор полон — игру можно начинать.'
+              : `Нужно ровно ${SPELLS_PER_ROSTER} заклинаний: доберите ещё ${slotsLeft}.`}
+          </div>
           <div
             style={{
               display: 'flex',
@@ -943,6 +967,10 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
             {heroDetail.spells.map(spell => {
               const quantity = spellQuantityOf(selection, spell.slug);
               const verdict = canAddSpell(selection, spell);
+
+              // Снять карту можно всегда, даже когда общий лимит уже набран:
+              // иначе набор из 10 заклинаний нельзя было бы поменять.
+              const clickable = verdict.allowed || quantity > 0;
 
               return (
                 <div
@@ -972,7 +1000,7 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
 
                   <button
                     onClick={() => patchSelection(current => toggleSpell(current, spell))}
-                    disabled={!verdict.allowed && quantity === 0}
+                    disabled={!clickable}
                     title={verdict.reason ?? 'Щёлкните, чтобы взять или убрать'}
                     style={{
                       flexShrink: 0,
@@ -983,7 +1011,8 @@ const ArmyBuilder = ({ onStart, initialRosters }: ArmyBuilderProps) => {
                       border: 'none',
                       background: quantity > 0 ? '#c9a227' : '#55708a',
                       color: quantity > 0 ? '#000' : '#fff',
-                      cursor: verdict.allowed || quantity > 0 ? 'pointer' : 'not-allowed',
+                      cursor: clickable ? 'pointer' : 'not-allowed',
+                      opacity: clickable ? 1 : 0.5,
                     }}
                   >
                     {quantity > 0 ? `${quantity}/${spell.limit}` : `+ ${spell.limit}`}

@@ -333,6 +333,9 @@ const HexGrid = () => {
             const unit = unitsByHex.get(key);
             const isCover = terrain.get(key)?.type === 'cover';
 
+            // Портрет круглый: clipPath обрезает изображение по границе жетона.
+            const clipId = unit ? `unit-clip-${unit.id}` : '';
+
             return (
               <g key={`decor-${key}`} pointerEvents="none">
                 {isCover && (
@@ -340,13 +343,38 @@ const HexGrid = () => {
                 )}
                 {unit && (
                   <g>
+                    {unit.imageUrl && (
+                      <defs>
+                        <clipPath id={clipId}>
+                          <circle cx={x} cy={y} r={UNIT_RADIUS} />
+                        </clipPath>
+                      </defs>
+                    )}
                     <circle cx={x} cy={y} r={UNIT_RADIUS}
                             fill={unit.player === 'player1' ? '#a0c0e0' : '#e0b0b0'}
                             stroke={unit.player === 'player1' ? '#1d3a5c' : '#6b2020'}
                             strokeWidth={HEX_SIZE * 0.04} />
-                    <text x={x} y={y + UNIT_NAME_FONT * 0.36} textAnchor="middle" fontSize={UNIT_NAME_FONT} fontWeight="bold" fill="#000">
-                      {unit.name.slice(0, 2)}
-                    </text>
+                    {unit.imageUrl ? (
+                      // Портрет вместо инициалов: он один и тот же у всех копий
+                      // юнита, поэтому привязываем картинку к ключу гекса.
+                      <image
+                        href={unit.imageUrl}
+                        x={x - UNIT_RADIUS}
+                        y={y - UNIT_RADIUS}
+                        width={UNIT_RADIUS * 2}
+                        height={UNIT_RADIUS * 2}
+                        clipPath={`url(#${clipId})`}
+                        preserveAspectRatio="xMidYMid slice"
+                      />
+                    ) : (
+                      <text x={x} y={y + UNIT_NAME_FONT * 0.36} textAnchor="middle" fontSize={UNIT_NAME_FONT} fontWeight="bold" fill="#000">
+                        {unit.name.slice(0, 2)}
+                      </text>
+                    )}
+                    <circle cx={x} cy={y} r={UNIT_RADIUS}
+                            fill="none"
+                            stroke={unit.player === 'player1' ? '#1d3a5c' : '#6b2020'}
+                            strokeWidth={HEX_SIZE * 0.04} />
                     <text x={x} y={y + HEX_SIZE * 0.92} textAnchor="middle" fontSize={UNIT_HP_FONT} fill="#fff">
                       {unit.hp}/{unit.maxHp}
                     </text>

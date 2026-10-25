@@ -118,6 +118,8 @@ const buildArmy = (
     name: template.name,
     player,
     faction: template.factionSlug ?? 'unknown',
+    // null, если у карты нет портрета — тогда поле рисует инициалы.
+    imageUrl: template.imageUrl ?? null,
     position: spawns[index],
     hp: template.maxHp,
     maxHp: template.maxHp,

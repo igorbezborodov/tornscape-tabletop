@@ -84,8 +84,27 @@ const main = async () => {
   const cheap = find("condesator_of_lightning");
   const heavy = find("mul");
   const sword = find("militia_sword");
-  const spell = heroDetail.spells[0];
   const item = heroDetail.equipment.find((entry) => entry.slug === "antidote") ?? heroDetail.equipment[0];
+
+  // Правило игры: в ростере должно быть ровно SPELLS_PER_ROSTER заклинаний
+  // (сумма количеств). Набираем их по лимитам карт.
+  const SPELLS_PER_ROSTER = 10;
+
+  const buildSpells = (target) => {
+    const picked = [];
+    let left = target;
+
+    for (const entry of heroDetail.spells) {
+      if (left === 0) break;
+      const quantity = Math.min(entry.limit, left);
+      picked.push({ slug: entry.slug, quantity });
+      left -= quantity;
+    }
+
+    if (left > 0) throw new Error(`не удалось набрать ${target} заклинаний у лидера`);
+
+    return picked;
+  };
 
   const expected =
     heroDetail.hero.points +
@@ -103,7 +122,7 @@ const main = async () => {
       { slug: heavy.slug, quantity: 1 },
       { slug: sword.slug, quantity: 1 },
     ],
-    spells: [{ slug: spell.slug, quantity: 1 }],
+    spells: buildSpells(SPELLS_PER_ROSTER),
     equipment: [{ slug: item.slug, quantity: 1 }],
   });
 
@@ -112,8 +131,32 @@ const main = async () => {
   check(
     "связи ростера сохранены",
     valid.payload?.units.length === 3 &&
-      valid.payload?.spells.length === 1 &&
+      valid.payload?.spells.reduce((total, entry) => total + entry.quantity, 0) ===
+        SPELLS_PER_ROSTER &&
       valid.payload?.equipment.length === 1,
+    `заклинаний: ${valid.payload?.spells.reduce((total, entry) => total + entry.quantity, 0)}`,
+  );
+
+  const tooFewSpells = await postJson("/api/rosters", {
+    heroSlug: "richard",
+    formatPoints: 200,
+    spells: buildSpells(SPELLS_PER_ROSTER - 1),
+  });
+  check(
+    "отклоняется неполный набор заклинаний",
+    tooFewSpells.status === 422,
+    tooFewSpells.payload?.problems?.find((problem) => problem.startsWith("Заклинания")),
+  );
+
+  const tooManySpells = await postJson("/api/rosters", {
+    heroSlug: "richard",
+    formatPoints: 200,
+    spells: buildSpells(SPELLS_PER_ROSTER + 1),
+  });
+  check(
+    "отклоняется превышение числа заклинаний",
+    tooManySpells.status === 422,
+    tooManySpells.payload?.problems?.find((problem) => problem.startsWith("Заклинания")),
   );
 
   const overLimit = await postJson("/api/rosters", {

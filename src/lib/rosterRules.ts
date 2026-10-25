@@ -6,7 +6,12 @@
 // Модуль намеренно не зависит ни от DOM, ни от Prisma: его импортируют и
 // React-компоненты, и Express-сервер, поэтому проверки совпадают.
 
+import { SPELLS_PER_ROSTER } from './rosterLimits';
 import type { RosterUnitInput } from '../types/game';
+
+// Константа живёт в отдельном модуле без импортов: её подключает сервер,
+// собираемый с moduleResolution=NodeNext.
+export { SPELLS_PER_ROSTER };
 
 /** Юнит, который идёт «в комплекте» с выбранным юнитом (например, псарь → боевые псы). */
 export type UnitRequirement = {
@@ -163,6 +168,14 @@ export const selectionPoints = (selection: RosterSelection): number =>
 export const selectionUnitCount = (selection: RosterSelection): number =>
   selection.units.reduce((total, unit) => total + unit.quantity, 0) +
   selection.companions.reduce((total, companion) => total + companion.quantity, 0);
+
+/** Сумма количеств всех заклинаний ростера — сравнивается с SPELLS_PER_ROSTER. */
+export const selectionSpellCount = (selection: RosterSelection): number =>
+  selection.spells.reduce((total, spell) => total + spell.quantity, 0);
+
+/** Сколько ещё заклинаний можно добрать до обязательных десяти. */
+export const spellSlotsLeft = (selection: RosterSelection): number =>
+  Math.max(0, SPELLS_PER_ROSTER - selectionSpellCount(selection));
 
 export const quantityOf = (selection: RosterSelection, slug: string): number =>
   selection.units.find((unit) => unit.slug === slug)?.quantity ?? 0;
@@ -417,6 +430,14 @@ export const canAddSpell = (
     return { allowed: false, reason: `Достигнут лимит: ${spell.limit} шт.` };
   }
 
+  // Верхняя граница жёсткая: ровно 10 заклинаний, «про запас» брать нельзя.
+  if (selectionSpellCount(selection) >= SPELLS_PER_ROSTER) {
+    return {
+      allowed: false,
+      reason: `Набрано ${SPELLS_PER_ROSTER} заклинаний — это общий лимит ростера.`,
+    };
+  }
+
   return { allowed: true, reason: null };
 };
 
@@ -425,6 +446,8 @@ export const toggleSpell = (
   spell: RosterSpellOption,
 ): RosterSelection => {
   const selected = selection.spells.find((item) => item.slug === spell.slug);
+  // Снимать заклинания можно всегда, а добирать — только пока не набрано 10.
+  const atCap = selectionSpellCount(selection) >= SPELLS_PER_ROSTER;
 
   if (selected) {
     const nextQuantity = selected.quantity + 1;
@@ -433,6 +456,8 @@ export const toggleSpell = (
       return { ...selection, spells: selection.spells.filter((item) => item.slug !== spell.slug) };
     }
 
+    if (atCap) return selection;
+
     return {
       ...selection,
       spells: selection.spells.map((item) =>
@@ -440,6 +465,8 @@ export const toggleSpell = (
       ),
     };
   }
+
+  if (atCap) return selection;
 
   return { ...selection, spells: [...selection.spells, { ...spell, quantity: 1 }] };
 };
@@ -592,6 +619,15 @@ export const selectionProblems = (selection: RosterSelection): string[] => {
     }
   }
 
+  // Набор заклинаний обязателен и строго фиксирован по размеру.
+  const spellCount = selectionSpellCount(selection);
+
+  if (spellCount !== SPELLS_PER_ROSTER) {
+    problems.push(
+      `Заклинания: ${spellCount} из ${SPELLS_PER_ROSTER} — в ростере должно быть ровно ${SPELLS_PER_ROSTER}.`,
+    );
+  }
+
   const bearerKeys = new Set(rosterBearers(selection).map((bearer) => bearer.slug));
 
   for (const item of selection.equipment) {
@@ -648,6 +684,8 @@ export const expandUnitsForBattle = (selection: RosterSelection): RosterUnitInpu
       id: unit.unitId,
       name: unit.name,
       factionSlug: selection.factionSlug ?? undefined,
+      // Портрет берём из каталога: на поле он заменяет инициалы юнита.
+      imageUrl: unit.imageUrl ?? undefined,
       maxHp: stats.maxHp,
       movement: stats.movement,
       attack: stats.attack,
@@ -662,6 +700,7 @@ export const expandUnitsForBattle = (selection: RosterSelection): RosterUnitInpu
       id: `companion:${companion.slug}`,
       name: companion.name,
       factionSlug: selection.factionSlug ?? undefined,
+      imageUrl: companion.imageUrl ?? undefined,
       maxHp: 1,
       movement: 3,
       attack: 1,

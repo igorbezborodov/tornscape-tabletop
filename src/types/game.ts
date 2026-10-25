@@ -10,6 +10,8 @@ export type Unit = {
   player: PlayerId;
   /** Слаг фракции из БД (krigmark, angelin, ...). */
   faction: string;
+  /** Портрет юнита из каталога: на поле заменяет подпись из первых букв. */
+  imageUrl: string | null;
   position: HexCoord;
   hp: number;
   maxHp: number;
@@ -26,6 +28,8 @@ export type RosterUnitInput = {
   id: string;
   name: string;
   factionSlug?: string;
+  /** Портрет юнита (image_path из каталога armybuilder). */
+  imageUrl?: string;
   maxHp: number;
   movement: number;
   attack: number;

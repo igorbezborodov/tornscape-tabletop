@@ -5,6 +5,8 @@
 import express from "express";
 import cors from "cors";
 import { prisma } from "./prisma.js";
+// Общий лимит ростера: клиент и сервер проверяют заклинания одинаково.
+import { SPELLS_PER_ROSTER } from "../src/lib/rosterLimits.js";
 
 const app = express();
 const PORT = Number(process.env["PORT"] ?? 3001); // Отдельный порт от Vite (5173)
@@ -442,6 +444,15 @@ app.post("/api/rosters", async (req, res) => {
       }
       return [{ spellId: option.spellId, quantity: entry.quantity }];
     });
+
+    // Количество заклинаний в ростере строго фиксировано: ни больше, ни меньше.
+    const spellCount = selectedSpells.reduce((total, entry) => total + entry.quantity, 0);
+
+    if (spellCount !== SPELLS_PER_ROSTER) {
+      problems.push(
+        `Заклинания: ${spellCount} из ${SPELLS_PER_ROSTER} — в ростере должно быть ровно ${SPELLS_PER_ROSTER}.`,
+      );
+    }
 
     const selectedEquipment = (body.equipment ?? []).flatMap((entry) => {
       const option = hero.equipmentOptions.find((item) => item.equipment.slug === entry.slug);
