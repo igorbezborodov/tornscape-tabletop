@@ -7,7 +7,13 @@
 // React-компоненты, и Express-сервер, поэтому проверки совпадают.
 
 import { SPELLS_PER_ROSTER } from './rosterLimits';
-import type { RosterUnitInput } from '../types/game';
+import type {
+  ActionTile,
+  DefensePool,
+  DomainSlug,
+  MiniSize,
+  RosterUnitInput,
+} from '../types/game';
 
 // Константа живёт в отдельном модуле без импортов: её подключает сервер,
 // собираемый с moduleResolution=NodeNext.
@@ -655,26 +661,87 @@ export const selectionProblems = (selection: RosterSelection): string[] => {
   return problems;
 };
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
 /**
  * Боевые параметры карт armybuilder не публикует (они есть только на
- * изображениях), поэтому для прототипа настольной игры характеристики
- * выводятся из стоимости. Значения намеренно скромные: юнит за 100 очков
- * получает 6 HP, 5 атаки и 4 защиты.
+ * изображениях карточек), поэтому для прототипа характеристики выводятся из
+ * стоимости. При этом структура значений повторяет правила:
+ *
+ *  - `size` — размер Миниатюры (Пехотная / Крупная / Большая / Огромная);
+ *  - `movement` — дистанция Действия «Шаг» в гексах;
+ *  - `defensePool` — Пул Кубиков Защиты из пиктограммы щита;
+ *  - `attackTiles` — Плитки Действий с Пул ом Кубиков и значением Урона.
+ *
+ * Значения намеренно скромные: юнит за 100 очков получает 6 Жизней и
+ * атаку 2⚔ 1🌀 1✴ с уроном 2.
  */
 export const deriveCombatStats = (points: number) => {
-  const clamp = (value: number, min: number, max: number) =>
-    Math.max(min, Math.min(max, value));
+  const maxHp = clamp(Math.round(points / 15), 2, 8);
+  const attackDice = clamp(Math.round(points / 30) + 1, 1, 3);
+  const masteryDice = points >= 70 ? 1 : 0;
+  const agilityDice = 1;
+  const damage = clamp(Math.round(points / 45), 1, 3);
+  const size: MiniSize = points >= 120 ? 'big' : points >= 55 ? 'largeInfantry' : 'infantry';
+
+  const defenseDice = clamp(Math.round(points / 35), 1, 4);
+  const defenseAgility = clamp(Math.round(points / 60), 1, 2);
+
+  const defensePool: DefensePool = { defense: defenseDice, agility: defenseAgility };
+
+  const attackTiles: ActionTile[] = [
+    {
+      id: 'melee-strike',
+      name: 'Удар в ближнем бою',
+      kind: 'meleeAttack',
+      timeCost: 1,
+      range: 1,
+      damage,
+      damageType: 'physical',
+      pool: { attack: attackDice, agility: agilityDice, mastery: masteryDice },
+      effectOnCritical: 'bleeding',
+      description: 'Базовая Атака Ближнего Боя: 1 гекс, физический урон.',
+    },
+  ];
+
+  // Дальнобойные юниты (дешёвые и средние) получают Дистанционную Атаку:
+  // в правилах она запрещена, если в смежном гексе есть враг.
+  if (points < 95) {
+    attackTiles.push({
+      id: 'ranged-shot',
+      name: 'Дистанционный выстрел',
+      kind: 'rangedAttack',
+      timeCost: 1,
+      range: 2,
+      damage: Math.max(1, damage - 1),
+      damageType: 'physical',
+      pool: { attack: attackDice, agility: agilityDice, mastery: 0 },
+      effectOnCritical: 'bleeding',
+      description: 'Дистанционная Атака на 2 Гексона.',
+    });
+  }
 
   return {
-    maxHp: clamp(Math.round(points / 15), 1, 6),
-    movement: 3,
-    attack: clamp(Math.round(points / 25) + 1, 1, 5),
-    defense: clamp(Math.round(points / 30) + 1, 1, 4),
+    maxHp,
+    movement: size === 'big' ? 3 : 4,
+    size,
+    defensePool,
+    attackTiles,
+    /** Сводные значения для карточки в интерфейсе. */
+    attack: attackDice + masteryDice,
+    defense: defenseDice + defenseAgility,
+    damage,
   };
 };
 
 /** Разворачивает выбор в отдельные модели для игрового поля. */
-export const expandUnitsForBattle = (selection: RosterSelection): RosterUnitInput[] => {
+export const expandUnitsForBattle = (
+  selection: RosterSelection,
+  options: { leaderName?: string | null } = {},
+): RosterUnitInput[] => {
+  const leaderName = options.leaderName ?? selection.heroName;
+
   const units = selection.units.flatMap((unit) => {
     const stats = deriveCombatStats(unit.points);
 
@@ -682,12 +749,16 @@ export const expandUnitsForBattle = (selection: RosterSelection): RosterUnitInpu
       id: unit.unitId,
       name: unit.name,
       factionSlug: selection.factionSlug ?? undefined,
+      domain: selection.domainSlug as DomainSlug | undefined,
       // Портрет берём из каталога: на поле он заменяет инициалы юнита.
       imageUrl: unit.imageUrl ?? undefined,
+      size: stats.size,
       maxHp: stats.maxHp,
       movement: stats.movement,
-      attack: stats.attack,
-      defense: stats.defense,
+      defensePool: stats.defensePool,
+      attackTiles: stats.attackTiles,
+      isLeader: false,
+      points: unit.points,
     }));
   });
 
@@ -698,13 +769,38 @@ export const expandUnitsForBattle = (selection: RosterSelection): RosterUnitInpu
       id: `companion:${companion.slug}`,
       name: companion.name,
       factionSlug: selection.factionSlug ?? undefined,
+      domain: selection.domainSlug as DomainSlug | undefined,
       imageUrl: companion.imageUrl ?? undefined,
-      maxHp: 1,
-      movement: 3,
-      attack: 1,
-      defense: 1,
+      size: 'infantry' as MiniSize,
+      maxHp: 2,
+      movement: 4,
+      defensePool: { defense: 1, agility: 1 },
+      attackTiles: [
+        {
+          id: 'companion-strike',
+          name: 'Удар',
+          kind: 'meleeAttack',
+          timeCost: 1,
+          range: 1,
+          damage: 1,
+          damageType: 'physical',
+          pool: { attack: 1, agility: 1, mastery: 0 },
+        },
+      ] satisfies ActionTile[],
+      isLeader: false,
+      points: companion.points,
     })),
   );
 
-  return [...units, ...companions];
+  const all = [...units, ...companions];
+
+  // Лидер Экспедиции: его гибель запускает Тест на Панику у всего отряда.
+  if (!leaderName) return all;
+
+  const leaderIndex = all.findIndex(unit => unit.name === leaderName);
+  if (leaderIndex < 0) return all;
+
+  return all.map((unit, index) =>
+    index === leaderIndex ? { ...unit, isLeader: true } : unit,
+  );
 };

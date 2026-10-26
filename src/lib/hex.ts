@@ -1,4 +1,4 @@
-import type { HexCoord, TerrainData } from '../types/game';
+import type { HexCoord, TerrainData, TerrainType } from '../types/game';
 
 export const HEX_SIZE = 60;
 
@@ -192,13 +192,151 @@ export const generateHexsonGrid = (hexsonRows: number) => {
   return { hexes: uniqueHexes, hexsonCenters };
 };
 
-export const generateTerrain = (hexes: HexCoord[]): Map<string, TerrainData> => {
-  const terrain = new Map<string, TerrainData>();
-  hexes.forEach(h => {
-    if (Math.random() < 0.15) {
-      terrain.set(hexKey(h), { type: 'cover', coverBonus: 1 });
-    }
+/**
+ * Шесть направлений между соседними Гексонами.
+ *
+ * Гексоны в `generateHexsonGrid` разнесены на расстояние 3 гекса, поэтому
+ * соседние центры отличаются на один из этих векторов. Именно эти направления
+ * используются правилами «Линия Гексонов» и «Слепая Зона».
+ */
+export const HEXSON_DIRS: HexCoord[] = [
+  { q: 1, r: 2 },
+  { q: 3, r: -1 },
+  { q: 2, r: -3 },
+  { q: -1, r: -2 },
+  { q: -3, r: 1 },
+  { q: -2, r: 3 },
+];
+
+/** Соседние Гексоны (центры). */
+export const hexsonNeighbors = (center: HexCoord): HexCoord[] =>
+  HEXSON_DIRS.map(d => ({ q: center.q + d.q, r: center.r + d.r }));
+
+/** Индекс направления от `a` к `b`, если они соседние Гексоны; иначе -1. */
+export const hexsonDirectionIndex = (a: HexCoord, b: HexCoord): number =>
+  HEXSON_DIRS.findIndex(
+    d => a.q + d.q === b.q && a.r + d.r === b.r,
+  );
+
+/**
+ * Ближайший центр Гексона для указанного гекса.
+ * Гексы «цветка» принадлежат своему центру, а стыки — ближайшему из центров.
+ */
+export const hexsonOf = (hex: HexCoord, centers: Set<string>): HexCoord => {
+  if (centers.has(hexKey(hex))) return hex;
+
+  let best: { center: HexCoord; dist: number } | null = null;
+  for (const key of centers) {
+    const [q, r] = key.split(',').map(Number);
+    const center = { q, r };
+    const dist = hexDistance(hex, center);
+    if (!best || dist < best.dist) best = { center, dist };
+  }
+
+  return best ? best.center : hex;
+};
+
+/** Все гексы, которые занимает Гексон (центр + соседи). */
+export const hexesOfHexson = (center: HexCoord): HexCoord[] => [
+  center,
+  ...hexNeighbors(center),
+];
+
+/**
+ * Линия Гексонов между двумя центрами (алгоритм линейной интерполяции
+ * с округлением в кубических координатах).
+ *
+ * Используется правилами Видимости: если между Миниатюрой и целью лежит
+ * Укрывающий Ландшафт, цель находится в «Слепой Зоне».
+ */
+export const hexsonLine = (a: HexCoord, b: HexCoord): HexCoord[] => {
+  const toCube = (h: HexCoord) => ({ x: h.q, z: h.r, y: -h.q - h.r });
+  const fromCube = (c: { x: number; y: number; z: number }): HexCoord => ({
+    q: Math.round(c.x),
+    r: Math.round(c.z),
   });
+
+  const ca = toCube(a);
+  const cb = toCube(b);
+  const distance = hexDistance(a, b);
+  if (distance === 0) return [a];
+
+  const result: HexCoord[] = [];
+  for (let i = 0; i <= distance; i++) {
+    const t = i / distance;
+    const x = ca.x + (cb.x - ca.x) * t;
+    const y = ca.y + (cb.y - ca.y) * t;
+    const z = ca.z + (cb.z - ca.z) * t;
+
+    // Округление с сохранением суммы x + y + z = 0
+    let rx = Math.round(x);
+    let ry = Math.round(y);
+    let rz = Math.round(z);
+    const dx = Math.abs(rx - x);
+    const dy = Math.abs(ry - y);
+    const dz = Math.abs(rz - z);
+
+    if (dx > dy && dx > dz) rx = -ry - rz;
+    else if (dy > dz) ry = -rx - rz;
+    else rz = -rx - ry;
+
+    result.push(fromCube({ x: rx, y: ry, z: rz }));
+  }
+
+  return result;
+};
+
+/** Расстояние в Гексонах. */
+export const hexsonDistance = (a: HexCoord, b: HexCoord): number =>
+  hexDistance(a, b) / 3;
+
+/** Направления на гексы внутри Гексона — для движения по гексам. */
+export const hexesInsideHexson = (center: HexCoord, inBounds: (h: HexCoord) => boolean) =>
+  hexesOfHexson(center).filter(inBounds);
+
+/**
+ * Генерация ландшафта по правилам: Объёмный Ландшафт занимает целый Гексон
+ * (1 Гексон = 7 гексов), Опасный Ландшафт — отдельные гексы.
+ *
+ * Руины Весторна и Кристаллы Эфирита взаимоисключающие в рамках сценария
+ * (правило «все элементы Объёмного Ландшафта должны быть одного вида»).
+ */
+export const generateBattleTerrain = (
+  hexes: HexCoord[],
+  hexsonCenters: Set<string>,
+  options: { coverKind?: 'ruins' | 'etherCrystals'; coverCount?: number } = {},
+): Map<string, TerrainData> => {
+  const terrain = new Map<string, TerrainData>();
+  const coverKind = options.coverKind ?? (Math.random() < 0.5 ? 'ruins' : 'etherCrystals');
+  const inGrid = (h: HexCoord) => hexes.some(x => x.q === h.q && x.r === h.r);
+
+  const centers = Array.from(hexsonCenters).map(key => {
+    const [q, r] = key.split(',').map(Number);
+    return { q, r };
+  });
+
+  // Объёмный Ландшафт: целые Гексоны, никогда не в центре поля (расстановка)
+  const shuffled = [...centers].sort(() => Math.random() - 0.5);
+  const coverCount = options.coverCount ?? Math.max(2, Math.round(centers.length * 0.12));
+  const coverCenters = shuffled.slice(0, coverCount);
+
+  for (const center of coverCenters) {
+    for (const hex of hexesOfHexson(center)) {
+      if (!inGrid(hex)) continue;
+      terrain.set(hexKey(hex), { type: coverKind, coverBonus: 0 });
+    }
+  }
+
+  // Опасный Ландшафт: отдельные гексы (не поверх Объёмного)
+  const hazardKinds: TerrainType[] = ['flame', 'swamp', 'quicksand', 'deepWater'];
+  for (const hex of hexes) {
+    const key = hexKey(hex);
+    if (terrain.has(key)) continue;
+    if (Math.random() >= 0.06) continue;
+    const kind = hazardKinds[Math.floor(Math.random() * hazardKinds.length)];
+    terrain.set(key, { type: kind, coverBonus: 0 });
+  }
+
   return terrain;
 };
 

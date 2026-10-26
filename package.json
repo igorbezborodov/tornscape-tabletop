@@ -9,6 +9,7 @@
     "dev:back": "tsx watch server/index.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "rules:sim": "tsx scripts/rules-sim.ts",
     "preview": "vite preview",
     "db:seed": "prisma db seed",
     "db:studio": "node scripts/prisma-studio.mjs",

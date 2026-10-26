@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { HEX_SIZE, hexKey, hexPath, hexToPixel, getHexsonOutlinePaths } from '../lib/hex';
-import type { HexCoord, TerrainData, Unit } from '../types/game';
+import { zoneHexKeys } from '../lib/setup';
+import {
+  SCENARIO_MARKER_ICON,
+  SCENARIO_MARKER_LABEL,
+  STATE_MARKER_ICON,
+  TERRAIN_ICON,
+  isCoverTerrain,
+  isHazardTerrain,
+  type HexCoord,
+  type TerrainData,
+  type Unit,
+} from '../types/game';
 
 type ViewBox = { x: number; y: number; w: number; h: number };
 
@@ -20,7 +31,10 @@ const BORDER_WIDTH = HEX_SIZE * 0.06;
 const UNIT_RADIUS = HEX_SIZE * 0.62;
 const UNIT_NAME_FONT = HEX_SIZE * 0.28;
 const UNIT_HP_FONT = HEX_SIZE * 0.22;
-const COVER_FONT = HEX_SIZE * 0.34;
+const TERRAIN_FONT = HEX_SIZE * 0.44;
+const MARKER_FONT = HEX_SIZE * 0.3;
+const WHIRLWIND_RADIUS = HEX_SIZE * 2.1;
+const WHIRLWIND_STROKE = HEX_SIZE * 0.1;
 
 // Зум относительно точки (px, py) в координатах viewBox
 const zoomAbout = (view: ViewBox, baseW: number, px: number, py: number, factor: number): ViewBox => {
@@ -59,7 +73,91 @@ const buttonStyle: CSSProperties = {
 };
 
 const HexGrid = () => {
-  const { grid, hexsonCenters, terrain, units, activeUnitId, reachable, selectUnit, moveUnit, hasActivated } = useGameStore();
+  const {
+    grid,
+    hexsonCenters,
+    terrain,
+    units,
+    whirlwinds,
+    scenarioMarkers,
+    activeUnitId,
+    activation,
+    phase,
+    reachable,
+    currentPlayer,
+    setupStage,
+    deploymentZones,
+    deployingPlayer,
+    deployUnit,
+    deployToReserve,
+    activateFromReserve,
+    beginActivation,
+    moveActiveUnit,
+    confirmAttack,
+    declareReaction,
+  } = useGameStore();
+
+  const [selectedDeployId, setSelectedDeployId] = useState<string | null>(null);
+  const [reserveUnitId, setReserveUnitId] = useState<string | null>(null);
+  const [legendOpen, setLegendOpen] = useState(true);
+
+  const isDeployment = setupStage === 'deployment';
+
+  /** Миниатюры текущего выставляющегося игрока, ещё не попавшие на поле. */
+  const pendingDeploy = useMemo(
+    () =>
+      isDeployment && deployingPlayer
+        ? units.filter(
+            item => item.player === deployingPlayer && !item.deployed && !item.reserve,
+          )
+        : [],
+    [isDeployment, deployingPlayer, units],
+  );
+
+  // Если выбранная миниатюра ушла из очереди, берём первую доступную.
+  const activeDeployId =
+    selectedDeployId && pendingDeploy.some(item => item.id === selectedDeployId)
+      ? selectedDeployId
+      : pendingDeploy[0]?.id ?? null;
+
+  /** Резерв игрока, чья сейчас Активация: вводится в игру с −1 Маркером Времени. */
+  const reserveUnits = useMemo(
+    () =>
+      phase === 'activation' && setupStage === 'complete' && !activeUnitId
+        ? units.filter(
+            item =>
+              item.reserve && !item.dead && item.hp > 0 && item.player === currentPlayer,
+          )
+        : [],
+    [phase, setupStage, activeUnitId, currentPlayer, units],
+  );
+
+  /** Гексы зон расстановки: подсвечиваются до завершения Шага 3. */
+  const zoneOwnerByHex = useMemo(() => {
+    const map = new Map<string, Unit['player'] | null>();
+    if (setupStage === 'complete') return map;
+    for (const zone of deploymentZones) {
+      for (const key of zoneHexKeys(zone)) map.set(key, zone.player);
+    }
+    return map;
+  }, [deploymentZones, setupStage]);
+
+  /** Подписи зон — по центру масс гексонов зоны. */
+  const zoneLabels = useMemo(() => {
+    if (setupStage === 'complete') return [];
+    return deploymentZones.map((zone, index) => {
+      const points = zone.hexsons.map(hexToPixel);
+      const cx = points.reduce((total, point) => total + point.x, 0) / Math.max(1, points.length);
+      const cy = points.reduce((total, point) => total + point.y, 0) / Math.max(1, points.length);
+      const caption =
+        zone.player === 'player1'
+          ? `ЗОНА 1 (Синие)`
+          : zone.player === 'player2'
+            ? `ЗОНА 2 (Красные)`
+            : `ЗОНА ${index + 1}`;
+      return { key: zone.id, x: cx, y: cy, caption, player: zone.player };
+    });
+  }, [deploymentZones, setupStage]);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; lastX: number; lastY: number; moved: boolean } | null>(null);
@@ -70,7 +168,8 @@ const HexGrid = () => {
 
   const unitsByHex = useMemo(() => {
     const m = new Map<string, Unit>();
-    for (const u of units) if (u.hp > 0) m.set(hexKey(u.position), u);
+    // Не выставленные миниатюры (Шаг 3) и Резерв на поле не показываются.
+    for (const u of units) if (u.hp > 0 && u.deployed) m.set(hexKey(u.position), u);
     return m;
   }, [units]);
 
@@ -220,30 +319,80 @@ const HexGrid = () => {
     setIsPanning(false);
   };
 
-  const handleClick = (hex: HexCoord) => {
-    if (hasActivated) return;
+  // Подсветка легальных целей текущего Действия Атаки.
+  const targetSet = useMemo(
+    () => new Set(activation?.targetIds ?? []),
+    [activation?.targetIds],
+  );
+  const isAttackPending = targetSet.size > 0;
 
+  const handleClick = (hex: HexCoord) => {
     const key = hexKey(hex);
     const unitAt = unitsByHex.get(key);
 
-    if (activeUnitId && reachableSet.has(key)) {
-      moveUnit(activeUnitId, hex);
+    // 0а. Шаг 3 «Расстановка»: клик по гексу своей зоны выставляет миниатюру.
+    if (isDeployment) {
+      if (!activeDeployId) return;
+      deployUnit(activeDeployId, hex);
+      setSelectedDeployId(null);
       return;
     }
-    if (unitAt) selectUnit(unitAt.id);
-    else selectUnit(null);
+
+    // 0б. Резерв: клик по гексу своей зоны вводит миниатюру из Резерва.
+    if (reserveUnitId) {
+      if (activateFromReserve(reserveUnitId, hex)) setReserveUnitId(null);
+      return;
+    }
+
+    // 1. Заявлено Действие Атаки — клик по легальной цели резолвит атаку.
+    if (isAttackPending) {
+      if (unitAt && targetSet.has(unitAt.id)) {
+        confirmAttack(unitAt.id);
+        return;
+      }
+      // Одиночная Реакция «Защита» заявляется до атаки, поэтому клик по себе
+      // трактуется как подготовка к защите.
+      if (unitAt && activation && unitAt.id === activation.unitId) {
+        declareReaction(unitAt.id, 'defend');
+        return;
+      }
+      return;
+    }
+
+    // 2. Заявлено перемещение — клик по достижимому гексу двигает миниатюру.
+    if (activation?.selectedActionId && reachableSet.has(key)) {
+      moveActiveUnit(hex);
+      return;
+    }
+
+    // 3. Иначе клик по своей неактивированной миниатюре начинает Активацию.
+    if (phase === 'activation' && unitAt) beginActivation(unitAt.id);
   };
 
   const hexFill = (key: string, unit: Unit | undefined, terrainAt: TerrainData | undefined) => {
     const isActive = unit?.id === activeUnitId;
-    const isAttackable = reachableSet.has(key) && !!unit && unit.id !== activeUnitId;
+    const isTarget = !!unit && targetSet.has(unit.id);
     const isReachable = reachableSet.has(key);
-    const isCover = terrainAt?.type === 'cover';
 
-    let fill = '#2a3a4d';
-    if (isCover) fill = '#2a4a2a';
+    // Зона расстановки: подсветка до завершения Шага 3 (цвет игрока).
+    // Ландшафт внутри зоны не перекрывает подсветку — он виден иконкой.
+    const zoneOwner = zoneOwnerByHex.get(key);
+    const zoneTint =
+      zoneOwner === 'player1'
+        ? '#26405e'
+        : zoneOwner === 'player2'
+          ? '#4a2a2e'
+          : zoneOwnerByHex.has(key)
+            ? '#3a3f52'
+            : null;
+
+    let fill = zoneTint ?? '#2a3a4d';
+    if (!zoneTint) {
+      if (terrainAt && isHazardTerrain(terrainAt.type)) fill = '#4a3524';
+      else if (terrainAt && isCoverTerrain(terrainAt.type)) fill = '#2a4a2a';
+    }
     if (isReachable) fill = '#3a5a80';
-    if (isAttackable) fill = '#7a2a2a';
+    if (isTarget) fill = '#7a2a2a';
     if (isActive) fill = '#c9a227';
     return fill;
   };
@@ -326,20 +475,62 @@ const HexGrid = () => {
             ))}
           </g>
 
-          {/* СЛОЙ 3: Декор — укрытия и юниты */}
+          {/* СЛОЙ 3: Декор — ландшафт, маркеры сценария и миниатюры */}
           {grid.map(hex => {
             const { x, y } = hexToPixel(hex);
             const key = hexKey(hex);
             const unit = unitsByHex.get(key);
-            const isCover = terrain.get(key)?.type === 'cover';
+            const cell = terrain.get(key);
+            const terrainIcon = cell && cell.type !== 'plain' ? TERRAIN_ICON[cell.type] : '';
+            const markerHere = scenarioMarkers.find(
+              marker => hexKey(marker.position) === key && !marker.carrierUnitId,
+            );
+            const markerOnUnit = scenarioMarkers.find(
+              marker => marker.carrierUnitId && marker.carrierUnitId === unit?.id,
+            );
 
             // Портрет круглый: clipPath обрезает изображение по границе жетона.
             const clipId = unit ? `unit-clip-${unit.id}` : '';
 
             return (
               <g key={`decor-${key}`} pointerEvents="none">
-                {isCover && (
-                  <text x={x} y={y + COVER_FONT * 0.35} textAnchor="middle" fontSize={COVER_FONT} fill="#88cc88">🛡️</text>
+                {terrainIcon && (
+                  <text
+                    x={x}
+                    y={y + TERRAIN_FONT * 0.35}
+                    textAnchor="middle"
+                    fontSize={TERRAIN_FONT}
+                    opacity={unit ? 0.35 : 0.85}
+                  >
+                    {terrainIcon}
+                  </text>
+                )}
+                {markerHere && (
+                  <g>
+                    {/* Маркер Сценария: цвет — сторона, иконка — вид маркера. */}
+                    <circle
+                      cx={x}
+                      cy={y - UNIT_RADIUS * 0.85}
+                      r={HEX_SIZE * 0.3}
+                      fill={
+                        markerHere.owner === 'player2'
+                          ? '#8a4a4a'
+                          : markerHere.owner === 'player1'
+                            ? '#4a6a8a'
+                            : '#5a5a70'
+                      }
+                      stroke="#0a1220"
+                      strokeWidth={HEX_SIZE * 0.03}
+                    />
+                    <text
+                      x={x}
+                      y={y - UNIT_RADIUS * 0.85 + HEX_SIZE * 0.11}
+                      textAnchor="middle"
+                      fontSize={HEX_SIZE * 0.3}
+                    >
+                      {SCENARIO_MARKER_ICON[markerHere.kind]}
+                    </text>
+                  </g>
                 )}
                 {unit && (
                   <g>
@@ -375,6 +566,58 @@ const HexGrid = () => {
                             fill="none"
                             stroke={unit.player === 'player1' ? '#1d3a5c' : '#6b2020'}
                             strokeWidth={HEX_SIZE * 0.04} />
+                    {/* Ободок цвета игрока: активированные миниатюры тускнеют. */}
+                    {unit.activated && (
+                      <circle cx={x} cy={y} r={UNIT_RADIUS * 1.08}
+                              fill="none" stroke="#8899aa" strokeWidth={HEX_SIZE * 0.03}
+                              strokeDasharray={`${HEX_SIZE * 0.12} ${HEX_SIZE * 0.1}`} />
+                    )}
+                    {/* Маркеры Времени: каждый — маленький ромб снизу слева. */}
+                    {Array.from({ length: unit.timeMarkers }).map((_, index) => (
+                      <rect
+                        key={`tm-${key}-${index}`}
+                        x={x - UNIT_RADIUS + index * HEX_SIZE * 0.22}
+                        y={y + UNIT_RADIUS * 0.55}
+                        width={HEX_SIZE * 0.15}
+                        height={HEX_SIZE * 0.15}
+                        fill="#c9a227"
+                        stroke="#0a1220"
+                        strokeWidth={HEX_SIZE * 0.02}
+                        transform={`rotate(45 ${x - UNIT_RADIUS + index * HEX_SIZE * 0.22 + HEX_SIZE * 0.075} ${y + UNIT_RADIUS * 0.55 + HEX_SIZE * 0.075})`}
+                      />
+                    ))}
+                    {/* Маркеры Состояний: иконки справа сверху от жетона. */}
+                    {unit.stateMarkers.map((marker, index) => (
+                      <text
+                        key={`sm-${key}-${marker}-${index}`}
+                        x={x + UNIT_RADIUS * 0.9}
+                        y={y - UNIT_RADIUS * 0.6 + index * MARKER_FONT * 0.9}
+                        fontSize={MARKER_FONT}
+                        textAnchor="middle"
+                      >
+                        {STATE_MARKER_ICON[marker]}
+                      </text>
+                    ))}
+                    {markerOnUnit && (
+                      <g>
+                        <circle
+                          cx={x - UNIT_RADIUS * 0.85}
+                          cy={y - UNIT_RADIUS * 0.85}
+                          r={HEX_SIZE * 0.26}
+                          fill={markerOnUnit.owner === 'player2' ? '#8a4a4a' : '#4a6a8a'}
+                          stroke="#0a1220"
+                          strokeWidth={HEX_SIZE * 0.03}
+                        />
+                        <text
+                          x={x - UNIT_RADIUS * 0.85}
+                          y={y - UNIT_RADIUS * 0.85 + HEX_SIZE * 0.1}
+                          textAnchor="middle"
+                          fontSize={HEX_SIZE * 0.26}
+                        >
+                          {SCENARIO_MARKER_ICON[markerOnUnit.kind]}
+                        </text>
+                      </g>
+                    )}
                     <text x={x} y={y + HEX_SIZE * 0.92} textAnchor="middle" fontSize={UNIT_HP_FONT} fill="#fff">
                       {unit.hp}/{unit.maxHp}
                     </text>
@@ -384,8 +627,285 @@ const HexGrid = () => {
             );
           })}
 
+          {/*
+            СЛОЙ 4: Эфирные Вихри. Вихрь занимает целый гексон, поэтому
+            рисуется полупрозрачным кругом поверх миниатюр — видно, кто в нём.
+          */}
+          <g style={{ pointerEvents: 'none' }}>
+            {whirlwinds.map(whirlwind => {
+              const { x, y } = hexToPixel(whirlwind.position);
+              const stroke =
+                whirlwind.allegiance === 'player1'
+                  ? '#4a8ad0'
+                  : whirlwind.allegiance === 'player2'
+                    ? '#d05a5a'
+                    : '#b0a0e0';
+              return (
+                <g key={`whirlwind-${whirlwind.id}`}>
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={WHIRLWIND_RADIUS}
+                    fill="rgba(120, 100, 200, 0.16)"
+                    stroke={stroke}
+                    strokeWidth={WHIRLWIND_STROKE}
+                    strokeDasharray={`${HEX_SIZE * 0.3} ${HEX_SIZE * 0.2}`}
+                  />
+                  <text
+                    x={x}
+                    y={y - WHIRLWIND_RADIUS * 0.82}
+                    textAnchor="middle"
+                    fontSize={HEX_SIZE * 0.62}
+                  >
+                    {whirlwind.isMaelstrom ? '🌪️' : '🌀'}
+                  </text>
+                  <text
+                    x={x}
+                    y={y + WHIRLWIND_RADIUS * 0.95}
+                    textAnchor="middle"
+                    fontSize={HEX_SIZE * 0.34}
+                    fill="#d8ccff"
+                  >
+                    💎 {whirlwind.etherCrystals}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+
+          {/* СЛОЙ 5: Подписи Зон Расстановки (Шаг 3). */}
+          {zoneLabels.length > 0 && (
+            <g style={{ pointerEvents: 'none' }}>
+              {zoneLabels.map(label => (
+                <text
+                  key={`zone-label-${label.key}`}
+                  x={label.x}
+                  y={label.y}
+                  textAnchor="middle"
+                  fontSize={HEX_SIZE * 0.9}
+                  fontWeight="bold"
+                  fill={
+                    label.player === 'player1'
+                      ? 'rgba(150, 200, 255, 0.75)'
+                      : label.player === 'player2'
+                        ? 'rgba(255, 170, 170, 0.75)'
+                        : 'rgba(220, 220, 240, 0.6)'
+                  }
+                  stroke="#0a1220"
+                  strokeWidth={HEX_SIZE * 0.06}
+                  paintOrder="stroke"
+                >
+                  {label.caption}
+                </text>
+              ))}
+            </g>
+          )}
+
         </g>
       </svg>
+
+      {/* Панель Шага 3 «Расстановка»: очередь миниатюр текущего игрока. */}
+      {isDeployment && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            width: 240,
+            maxHeight: '70%',
+            overflowY: 'auto',
+            background: 'rgba(15, 24, 34, 0.94)',
+            border: '1px solid #4a6a8a',
+            borderRadius: 8,
+            padding: 10,
+            fontSize: 12,
+            color: '#dbeafe',
+          }}
+        >
+          <div style={{ fontWeight: 'bold', marginBottom: 6 }}>
+            Шаг 3: расстановка
+            {deployingPlayer ? (deployingPlayer === 'player1' ? ' — Игрок 1' : ' — Игрок 2') : ''}
+          </div>
+          <div style={{ marginBottom: 8, opacity: 0.8, lineHeight: 1.35 }}>
+            Выберите миниатюру и кликните гекс своей зоны. Очередь: по одной Миниатюре.
+          </div>
+          {pendingDeploy.length === 0 ? (
+            <div style={{ opacity: 0.7 }}>Очередь пуста.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {pendingDeploy.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setSelectedDeployId(item.id)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                    border: `1px solid ${item.id === activeDeployId ? '#c9a227' : '#3a4a5d'}`,
+                    background: item.id === activeDeployId ? '#2a3a52' : '#1a2632',
+                    color: '#dbeafe',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                  }}
+                >
+                  {item.name}
+                  <span style={{ opacity: 0.6 }}> · {item.points} очк.</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {activeDeployId && (
+            <button
+              type="button"
+              onClick={() => {
+                deployToReserve(activeDeployId);
+                setSelectedDeployId(null);
+              }}
+              style={{
+                marginTop: 8,
+                width: '100%',
+                padding: '6px 8px',
+                borderRadius: 6,
+                border: '1px solid #8a6a3a',
+                background: '#3a2e1e',
+                color: '#f0d9a0',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              В Резерв (не помещается в зону)
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Резерв в Фазе IV: ввод миниатюры на поле с −1 Маркером Времени. */}
+      {reserveUnits.length > 0 && !reserveUnitId && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            background: 'rgba(15, 24, 34, 0.94)',
+            border: '1px solid #8a6a3a',
+            borderRadius: 8,
+            padding: 10,
+            fontSize: 12,
+            color: '#f0d9a0',
+          }}
+        >
+          <div style={{ fontWeight: 'bold', marginBottom: 6 }}>Резерв</div>
+          {reserveUnits.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setReserveUnitId(item.id)}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                marginBottom: 4,
+                padding: '6px 8px',
+                borderRadius: 6,
+                border: '1px solid #3a4a5d',
+                background: '#1a2632',
+                color: '#dbeafe',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              {item.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {reserveUnitId && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            background: 'rgba(15, 24, 34, 0.94)',
+            border: '1px solid #c9a227',
+            borderRadius: 8,
+            padding: 10,
+            fontSize: 12,
+            color: '#f0d9a0',
+          }}
+        >
+          Кликните гекс в своей зоне, чтобы ввести миниатюру из Резерва.
+          <button
+            type="button"
+            onClick={() => setReserveUnitId(null)}
+            style={{
+              display: 'block',
+              marginTop: 6,
+              width: '100%',
+              padding: '4px 8px',
+              borderRadius: 6,
+              border: '1px solid #3a4a5d',
+              background: '#1a2632',
+              color: '#dbeafe',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            Отмена
+          </button>
+        </div>
+      )}
+
+      {/* Легенда обозначений на гексах. */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 10,
+          right: 12,
+          maxWidth: 260,
+          background: 'rgba(15, 24, 34, 0.94)',
+          border: '1px solid #3a4a5d',
+          borderRadius: 8,
+          padding: 8,
+          fontSize: 11,
+          color: '#cfe3f7',
+          lineHeight: 1.5,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setLegendOpen(open => !open)}
+          style={{
+            width: '100%',
+            textAlign: 'left',
+            background: 'none',
+            border: 'none',
+            color: '#9ecbff',
+            cursor: 'pointer',
+            fontSize: 11,
+            fontWeight: 'bold',
+            padding: 0,
+            marginBottom: legendOpen ? 6 : 0,
+          }}
+        >
+          {legendOpen ? '▾' : '▸'} Легенда обозначений
+        </button>
+        {legendOpen && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div>🛡️ Укрытие (Объёмный Ландшафт) — цель скрыта</div>
+            <div>💎 Кристаллы Эфирита — Укрытие</div>
+            <div>🔥 / ☠️ / 🌀 / 🌊 — Опасный Ландшафт</div>
+            <div>{SCENARIO_MARKER_ICON.portable} {SCENARIO_MARKER_LABEL.portable} — несёт миниатюра</div>
+            <div>{SCENARIO_MARKER_ICON.bound} {SCENARIO_MARKER_LABEL.bound} — снимается по условию</div>
+            <div>{SCENARIO_MARKER_ICON.prisoner} {SCENARIO_MARKER_LABEL.prisoner}</div>
+            <div>{SCENARIO_MARKER_ICON.common} {SCENARIO_MARKER_LABEL.common} — открывается по сценарию</div>
+            <div>🌀 Эфирный Вихрь · 🌪️ Смерч · 💎 запас Эфира</div>
+            <div>◇ золотой ромб — Маркер Времени</div>
+            <div>Серый пунктир на жетоне — уже активирована</div>
+          </div>
+        )}
+      </div>
 
       {/* Управление камерой */}
       <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
